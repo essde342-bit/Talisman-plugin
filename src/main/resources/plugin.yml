@@ -1,0 +1,21 @@
+name: TalismanPlugin
+version: 1.0.0
+main: ru.essde.talisman.TalismanPlugin
+api-version: '1.21.4'
+description: Enchanted talismans that grant attributes in the offhand
+author: essde342-bit
+
+commands:
+  talisman:
+    description: Gives you or another player a talisman
+    usage: /talisman [fury | give <player> [fury]]
+    aliases: [tal]
+    permission: talisman.use
+
+permissions:
+  talisman.use:
+    description: Allows a player to receive a talisman for themselves
+    default: true
+  talisman.admin:
+    description: Allows giving talismans to other players
+    default: op
