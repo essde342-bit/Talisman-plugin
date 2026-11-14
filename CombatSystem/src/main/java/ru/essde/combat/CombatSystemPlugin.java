@@ -3,6 +3,10 @@ package ru.essde.combat;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.block.Block;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.boss.BarColor;
 import org.bukkit.boss.BarStyle;
 import org.bukkit.boss.BossBar;
@@ -40,6 +44,8 @@ public final class CombatSystemPlugin extends JavaPlugin implements Listener, Ta
 
     private final Map<UUID, CombatState> combatants = new HashMap<>();
     private final Set<UUID> combatLogoutDeaths = new HashSet<>();
+    private final Map<UUID, Selection> selections = new HashMap<>();
+    private final Map<String, ProtectedRegion> protectedRegions = new HashMap<>();
 
     private BossBar disabledBossBar;
     private boolean pvpEnabled;
@@ -48,6 +54,7 @@ public final class CombatSystemPlugin extends JavaPlugin implements Listener, Ta
     public void onEnable() {
         saveDefaultConfig();
         pvpEnabled = getConfig().getBoolean("pvp-enabled", true);
+        loadProtectedRegions();
 
         disabledBossBar = Bukkit.createBossBar(
                 GREEN + "Пвп сейчас отключено",
@@ -59,6 +66,9 @@ public final class CombatSystemPlugin extends JavaPlugin implements Listener, Ta
                 .setExecutor(this);
         Objects.requireNonNull(getCommand("pvp"), "Command 'pvp' is missing from plugin.yml")
                 .setTabCompleter(this);
+        Objects.requireNonNull(getCommand("pvpwand")).setExecutor(this);
+        Objects.requireNonNull(getCommand("pvpzone")).setExecutor(this);
+        Objects.requireNonNull(getCommand("pvpzone")).setTabCompleter(this);
 
         getServer().getPluginManager().registerEvents(this, this);
         getServer().getScheduler().runTaskTimer(this, this::updateCombatBars, 20L, 20L);
@@ -91,6 +101,17 @@ public final class CombatSystemPlugin extends JavaPlugin implements Listener, Ta
         }
     }
 
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void blockDamageInProtectedRegions(EntityDamageByEntityEvent event) {
+        if (!(event.getEntity() instanceof Player victim)) return;
+        Player attacker = getResponsiblePlayer(event.getDamager());
+        if (attacker == null || attacker.getUniqueId().equals(victim.getUniqueId())) return;
+        if (isInsideProtectedRegion(attacker.getLocation()) || isInsideProtectedRegion(victim.getLocation())) {
+            event.setCancelled(true);
+            attacker.sendMessage("§aPvP здесь запрещено: игрок находится в защищённой зоне.");
+        }
+    }
+
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void tagPlayersInCombat(EntityDamageByEntityEvent event) {
         if (!pvpEnabled || !(event.getEntity() instanceof Player victim)) {
@@ -107,6 +128,25 @@ public final class CombatSystemPlugin extends JavaPlugin implements Listener, Ta
         // Both participants receive their own red, 30-second countdown bar.
         refreshCombatTag(attacker);
         refreshCombatTag(victim);
+    }
+
+    @EventHandler
+    public void onWandUse(PlayerInteractEvent event) {
+        if (event.getHand() != org.bukkit.inventory.EquipmentSlot.HAND || event.getClickedBlock() == null
+                || !isSelectionWand(event.getItem())) return;
+        Action action = event.getAction();
+        if (action != Action.LEFT_CLICK_BLOCK && action != Action.RIGHT_CLICK_BLOCK) return;
+        event.setCancelled(true);
+        Player player = event.getPlayer();
+        Selection selection = selections.computeIfAbsent(player.getUniqueId(), id -> new Selection());
+        Block block = event.getClickedBlock();
+        if (action == Action.LEFT_CLICK_BLOCK) {
+            selection.pos1 = block.getLocation();
+            player.sendMessage("§eПервая точка: §f" + block.getX() + ", " + block.getY() + ", " + block.getZ());
+        } else {
+            selection.pos2 = block.getLocation();
+            player.sendMessage("§eВторая точка: §f" + block.getX() + ", " + block.getY() + ", " + block.getZ());
+        }
     }
 
     @EventHandler
@@ -274,48 +314,123 @@ public final class CombatSystemPlugin extends JavaPlugin implements Listener, Ta
     }
 
     @Override
-    public boolean onCommand(
-            CommandSender sender,
-            Command command,
-            String label,
-            String[] args
-    ) {
-        if (args.length != 1
-                || (!args[0].equalsIgnoreCase("on") && !args[0].equalsIgnoreCase("off"))) {
-            sender.sendMessage("§cИспользование: /pvp <on|off>");
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        String cmd = command.getName().toLowerCase();
+        if (cmd.equals("pvpwand")) {
+            if (!(sender instanceof Player player)) { sender.sendMessage("§cТолько игрок может получить топорик."); return true; }
+            if (!player.hasPermission("pvpsystem.admin")) { player.sendMessage("§cНедостаточно прав."); return true; }
+            ItemStack wand = new ItemStack(Material.WOODEN_AXE);
+            ItemMeta meta = wand.getItemMeta();
+            meta.setDisplayName("§6Топорик выделения PvP-зоны");
+            meta.setLore(List.of("§7ЛКМ — точка 1", "§7ПКМ — точка 2"));
+            wand.setItemMeta(meta);
+            player.getInventory().addItem(wand).values().forEach(item -> player.getWorld().dropItemNaturally(player.getLocation(), item));
+            player.sendMessage("§aТопорик выдан. ЛКМ — точка 1, ПКМ — точка 2.");
             return true;
         }
-
+        if (cmd.equals("pvpzone")) {
+            if (!sender.hasPermission("pvpsystem.admin")) { sender.sendMessage("§cНедостаточно прав."); return true; }
+            if (args.length == 1 && args[0].equalsIgnoreCase("list")) {
+                sender.sendMessage("§eЗащищённые зоны: §f" + (protectedRegions.isEmpty() ? "нет" : String.join(", ", protectedRegions.keySet())));
+                return true;
+            }
+            if (args.length == 2 && args[0].equalsIgnoreCase("delete")) {
+                String name = args[1].toLowerCase();
+                if (protectedRegions.remove(name) == null) sender.sendMessage("§cЗона не найдена.");
+                else { saveProtectedRegions(); sender.sendMessage("§aЗона '" + name + "' удалена."); }
+                return true;
+            }
+            if (args.length == 2 && args[0].equalsIgnoreCase("create")) {
+                if (!(sender instanceof Player player)) { sender.sendMessage("§cТолько игрок может создавать зоны."); return true; }
+                String name = args[1].toLowerCase();
+                if (!name.matches("[a-z0-9_-]{1,32}")) { player.sendMessage("§cНазвание: латиница, цифры, _ или -, до 32 символов."); return true; }
+                Selection sel = selections.get(player.getUniqueId());
+                if (sel == null || sel.pos1 == null || sel.pos2 == null) { player.sendMessage("§cСначала выдели две точки топориком /pvpwand."); return true; }
+                if (!sel.pos1.getWorld().equals(sel.pos2.getWorld())) { player.sendMessage("§cТочки должны быть в одном мире."); return true; }
+                if (protectedRegions.containsKey(name)) { player.sendMessage("§cТакая зона уже существует."); return true; }
+                protectedRegions.put(name, new ProtectedRegion(sel.pos1.getWorld().getName(),
+                    Math.min(sel.pos1.getBlockX(), sel.pos2.getBlockX()), Math.min(sel.pos1.getBlockY(), sel.pos2.getBlockY()), Math.min(sel.pos1.getBlockZ(), sel.pos2.getBlockZ()),
+                    Math.max(sel.pos1.getBlockX(), sel.pos2.getBlockX()), Math.max(sel.pos1.getBlockY(), sel.pos2.getBlockY()), Math.max(sel.pos1.getBlockZ(), sel.pos2.getBlockZ())));
+                saveProtectedRegions();
+                player.sendMessage("§aЗона '" + name + "' создана. PvP внутри отключено.");
+                return true;
+            }
+            sender.sendMessage("§e/pvpzone create <имя> | /pvpzone delete <имя> | /pvpzone list");
+            return true;
+        }
+        if (args.length != 1 || (!args[0].equalsIgnoreCase("on") && !args[0].equalsIgnoreCase("off"))) {
+            sender.sendMessage("§cИспользование: /pvp <on|off>"); return true;
+        }
+        if (!sender.hasPermission("pvpsystem.admin")) { sender.sendMessage("§cНедостаточно прав."); return true; }
         boolean enable = args[0].equalsIgnoreCase("on");
-        if (enable == pvpEnabled) {
-            sender.sendMessage(enable
-                    ? GREEN + "PvP уже включено."
-                    : GREEN + "PvP уже отключено.");
-            return true;
-        }
-
+        if (enable == pvpEnabled) { sender.sendMessage(enable ? GREEN + "PvP уже включено." : GREEN + "PvP уже отключено."); return true; }
         setPvpEnabled(enable);
-        sender.sendMessage(enable
-                ? GREEN + "PvP включено. Боевая система активна."
-                : GREEN + "PvP отключено. Урон от других игроков заблокирован.");
+        sender.sendMessage(enable ? GREEN + "PvP включено. Боевая система активна." : GREEN + "PvP отключено. Урон от других игроков заблокирован.");
         return true;
     }
 
     @Override
-    public List<String> onTabComplete(
-            CommandSender sender,
-            Command command,
-            String alias,
-            String[] args
-    ) {
-        if (args.length != 1) {
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        if (command.getName().equalsIgnoreCase("pvpzone")) {
+            if (args.length == 1) return List.of("create", "delete", "list").stream().filter(v -> v.startsWith(args[0].toLowerCase())).toList();
+            if (args.length == 2 && args[0].equalsIgnoreCase("delete")) return protectedRegions.keySet().stream().filter(v -> v.startsWith(args[1].toLowerCase())).toList();
             return List.of();
         }
-
+        if (args.length != 1) return List.of();
         String prefix = args[0].toLowerCase();
-        return List.of("on", "off").stream()
-                .filter(value -> value.startsWith(prefix))
-                .toList();
+        return List.of("on", "off").stream().filter(v -> v.startsWith(prefix)).toList();
+    }
+
+    private boolean isSelectionWand(ItemStack item) {
+        return item != null && item.getType() == Material.WOODEN_AXE && item.hasItemMeta()
+                && item.getItemMeta().hasDisplayName()
+                && "§6Топорик выделения PvP-зоны".equals(item.getItemMeta().getDisplayName());
+    }
+
+    private boolean isInsideProtectedRegion(Location loc) {
+        if (loc.getWorld() == null) return false;
+        int x = loc.getBlockX(), y = loc.getBlockY(), z = loc.getBlockZ();
+        for (ProtectedRegion r : protectedRegions.values()) {
+            if (r.world.equals(loc.getWorld().getName()) && x >= r.minX && x <= r.maxX
+                    && y >= r.minY && y <= r.maxY && z >= r.minZ && z <= r.maxZ) return true;
+        }
+        return false;
+    }
+
+    private void loadProtectedRegions() {
+        protectedRegions.clear();
+        for (Map<?, ?> map : getConfig().getMapList("protected-regions")) {
+            try {
+                String name = String.valueOf(map.get("name")).toLowerCase();
+                protectedRegions.put(name, new ProtectedRegion(String.valueOf(map.get("world")),
+                    ((Number) map.get("min-x")).intValue(), ((Number) map.get("min-y")).intValue(), ((Number) map.get("min-z")).intValue(),
+                    ((Number) map.get("max-x")).intValue(), ((Number) map.get("max-y")).intValue(), ((Number) map.get("max-z")).intValue()));
+            } catch (Exception ex) { getLogger().warning("Не удалось загрузить защищённую зону: " + ex.getMessage()); }
+        }
+    }
+
+    private void saveProtectedRegions() {
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (Map.Entry<String, ProtectedRegion> entry : protectedRegions.entrySet()) {
+            ProtectedRegion r = entry.getValue();
+            Map<String, Object> map = new HashMap<>();
+            map.put("name", entry.getKey()); map.put("world", r.world);
+            map.put("min-x", r.minX); map.put("min-y", r.minY); map.put("min-z", r.minZ);
+            map.put("max-x", r.maxX); map.put("max-y", r.maxY); map.put("max-z", r.maxZ);
+            list.add(map);
+        }
+        getConfig().set("protected-regions", list);
+        saveConfig();
+    }
+
+    private static final class Selection { private Location pos1; private Location pos2; }
+    private static final class ProtectedRegion {
+        private final String world;
+        private final int minX, minY, minZ, maxX, maxY, maxZ;
+        private ProtectedRegion(String world, int minX, int minY, int minZ, int maxX, int maxY, int maxZ) {
+            this.world = world; this.minX = minX; this.minY = minY; this.minZ = minZ;
+            this.maxX = maxX; this.maxY = maxY; this.maxZ = maxZ;
+        }
     }
 
     private static final class CombatState {
