@@ -10,6 +10,14 @@ commands:
     description: Включает или выключает PvP на сервере
     usage: /pvp <on|off>
     permission: pvpsystem.admin
+  pvpwand:
+    description: Выдаёт топорик для выделения защищённой PvP-зоны
+    usage: /pvpwand
+    permission: pvpsystem.admin
+  pvpzone:
+    description: Управление защищёнными PvP-зонами
+    usage: /pvpzone <create|delete|list>
+    permission: pvpsystem.admin
 
 permissions:
   pvpsystem.admin:
