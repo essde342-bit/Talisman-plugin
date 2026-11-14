@@ -1,4 +1,4 @@
-name: Build plugin
+name: Build Paper plugins
 
 on:
   push:
@@ -22,13 +22,21 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Build with Maven
+      - name: Build both plugins with Maven
         run: mvn --batch-mode --no-transfer-progress clean package
 
-      - name: Upload plugin JAR
+      - name: Upload TalismanPlugin
         uses: actions/upload-artifact@v4
         with:
           name: TalismanPlugin-1.0.0
-          path: target/TalismanPlugin-1.0.0.jar
+          path: TalismanPlugin/target/TalismanPlugin-1.0.0.jar
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload CombatSystem
+        uses: actions/upload-artifact@v4
+        with:
+          name: CombatSystem-1.0.0
+          path: CombatSystem/target/CombatSystem-1.0.0.jar
           if-no-files-found: error
           retention-days: 30

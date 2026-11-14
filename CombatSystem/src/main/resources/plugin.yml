@@ -1,0 +1,17 @@
+name: CombatSystem
+version: 1.0.0
+main: ru.essde.combat.CombatSystemPlugin
+api-version: '1.21.4'
+description: PvP combat timer, boss bars and combat logout punishment
+author: essde342-bit
+
+commands:
+  pvp:
+    description: Включает или выключает PvP на сервере
+    usage: /pvp <on|off>
+    permission: pvpsystem.admin
+
+permissions:
+  pvpsystem.admin:
+    description: Allows changing the global PvP mode
+    default: op

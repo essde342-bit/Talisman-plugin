@@ -1,0 +1,2 @@
+# PvP is enabled by default. Change it with /pvp on or /pvp off.
+pvp-enabled: true
