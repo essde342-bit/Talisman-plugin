@@ -4,7 +4,7 @@ import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
-import org.bukkit.block.Biome;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.Bisected;
 import org.bukkit.block.data.type.Door;
 import org.bukkit.command.Command;
@@ -18,6 +18,7 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.BlockRedstoneEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
@@ -213,6 +214,30 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
                     && key.chunkX() == event.getChunk().getX()
                     && key.chunkZ() == event.getChunk().getZ()) {
                 closeDoorNow(key);
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void blockRedstoneOpening(BlockRedstoneEvent event) {
+        if (event.getNewCurrent() <= 0) {
+            return;
+        }
+
+        Block poweredBlock = event.getBlock();
+        if (isCustomDoorBlock(poweredBlock)) {
+            event.setNewCurrent(0);
+            return;
+        }
+
+        for (BlockFace face : List.of(
+                BlockFace.UP, BlockFace.DOWN, BlockFace.NORTH,
+                BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)) {
+            if (isCustomDoorBlock(poweredBlock.getRelative(face))) {
+                // Iron doors can normally be powered by redstone. Suppress
+                // direct redstone current next to our registered doors.
+                event.setNewCurrent(0);
+                return;
             }
         }
     }
