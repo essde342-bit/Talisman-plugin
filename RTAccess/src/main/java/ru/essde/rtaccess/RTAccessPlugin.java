@@ -89,6 +89,15 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
                 "§7Нажми §fЛКМ §7по специальной двери.",
                 "§8Не исчезает после использования."
         ));
+
+        // Minecraft 1.21.4 resource-pack model selector:
+        // assets/minecraft/items/paper.json selects this string value.
+        org.bukkit.inventory.meta.components.CustomModelDataComponent modelData =
+                meta.getCustomModelDataComponent();
+        modelData.setStrings(List.of("blue_keycard"));
+        meta.setCustomModelDataComponent(modelData);
+
+        // Persistent data remains the server-side identity used by RTAccess.
         meta.getPersistentDataContainer().set(itemTypeKey, PersistentDataType.STRING, ITEM_CARD);
         item.setItemMeta(meta);
         return item;
