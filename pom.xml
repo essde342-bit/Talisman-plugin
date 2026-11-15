@@ -18,6 +18,7 @@
     <modules>
         <module>TalismanPlugin</module>
         <module>CombatSystem</module>
+        <module>RTAccess</module>
     </modules>
 
     <repositories>
