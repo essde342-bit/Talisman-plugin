@@ -22,7 +22,7 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Build both plugins with Maven
+      - name: Build all plugins with Maven
         run: mvn --batch-mode --no-transfer-progress clean package
 
       - name: Upload TalismanPlugin
@@ -38,5 +38,13 @@ jobs:
         with:
           name: CombatSystem-1.0.0
           path: CombatSystem/target/CombatSystem-1.0.0.jar
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload RTAccess
+        uses: actions/upload-artifact@v4
+        with:
+          name: RTAccess-1.0.0
+          path: RTAccess/target/RTAccess-1.0.0.jar
           if-no-files-found: error
           retention-days: 30
