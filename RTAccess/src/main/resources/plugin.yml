@@ -1,5 +1,5 @@
 name: RTAccess
-version: 1.0.0
+version: 1.0.1
 main: ru.essde.rtaccess.RTAccessPlugin
 api-version: '1.21.4'
 description: RT doors, unbreakable blocks and private regions for Paper 1.21.4
@@ -12,8 +12,8 @@ commands:
     aliases: [rt]
     permission: rtaccess.admin
   rt_block:
-    description: Защита отдельного блока RT Block
-    usage: /rt_block [remove|list]
+    description: Пометить блок в руке для защиты каждого установленного экземпляра
+    usage: /rt_block [unmark|list]
     aliases: [rtblock]
     permission: rtaccess.admin
   rt_private:

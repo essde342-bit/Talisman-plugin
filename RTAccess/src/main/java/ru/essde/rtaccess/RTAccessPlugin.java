@@ -59,6 +59,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
 
     private NamespacedKey itemTypeKey;
     private NamespacedKey privateWandKey;
+    private NamespacedKey protectedBlockItemKey;
 
     private final Set<DoorKey> customDoors = new HashSet<>();
     private final Map<DoorKey, BukkitTask> closeTasks = new HashMap<>();
@@ -71,6 +72,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
     public void onEnable() {
         itemTypeKey = new NamespacedKey(this, "rt_item_type");
         privateWandKey = new NamespacedKey(this, "rt_private_wand");
+        protectedBlockItemKey = new NamespacedKey(this, "rt_protected_block_item");
 
         loadDoors();
         loadProtectionData();
@@ -174,6 +176,63 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         Byte marker = item.getItemMeta().getPersistentDataContainer()
                 .get(privateWandKey, PersistentDataType.BYTE);
         return marker != null && marker == (byte) 1;
+    }
+
+    private boolean isProtectedBlockItem(ItemStack item) {
+        if (item == null || item.getType().isAir() || !item.hasItemMeta()) {
+            return false;
+        }
+        Byte marker = item.getItemMeta().getPersistentDataContainer()
+                .get(protectedBlockItemKey, PersistentDataType.BYTE);
+        return marker != null && marker == (byte) 1;
+    }
+
+    private void markProtectedBlockItem(ItemStack item, boolean marked) {
+        ItemMeta meta = item.getItemMeta();
+        if (marked) {
+            meta.getPersistentDataContainer().set(protectedBlockItemKey, PersistentDataType.BYTE, (byte) 1);
+            List<String> lore = meta.hasLore() ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
+            String protectionLore = "§c§lRT Block §7— защита при установке";
+            if (!lore.contains(protectionLore)) {
+                lore.add(protectionLore);
+            }
+            meta.setLore(lore);
+        } else {
+            meta.getPersistentDataContainer().remove(protectedBlockItemKey);
+            if (meta.hasLore()) {
+                List<String> lore = new ArrayList<>(meta.getLore());
+                lore.removeIf(line -> line.equals("§c§lRT Block §7— защита при установке"));
+                meta.setLore(lore);
+            }
+        }
+        item.setItemMeta(meta);
+    }
+
+    private Set<BlockKey> getPlacedStructureKeys(Block block) {
+        Set<BlockKey> keys = new HashSet<>();
+        keys.add(BlockKey.from(block));
+
+        if (block.getBlockData() instanceof Bisected bisected) {
+            Block otherHalf = block.getRelative(
+                    bisected.getHalf() == Bisected.Half.BOTTOM ? BlockFace.UP : BlockFace.DOWN);
+            if (otherHalf.getType() == block.getType()
+                    && otherHalf.getBlockData() instanceof Bisected) {
+                keys.add(BlockKey.from(otherHalf));
+            }
+        }
+
+        if (block.getBlockData() instanceof org.bukkit.block.data.type.Bed bed) {
+            BlockFace otherDirection = bed.getPart()
+                    == org.bukkit.block.data.type.Bed.Part.FOOT
+                    ? bed.getFacing() : bed.getFacing().getOppositeFace();
+            Block otherHalf = block.getRelative(otherDirection);
+            if (otherHalf.getType() == block.getType()
+                    && otherHalf.getBlockData() instanceof org.bukkit.block.data.type.Bed) {
+                keys.add(BlockKey.from(otherHalf));
+            }
+        }
+
+        return keys;
     }
 
     private void giveItem(Player target, ItemStack item) {
@@ -490,22 +549,39 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
             return;
         }
 
-        // Breaking an individually protected block in Creative consumes its
-        // protection entry, so a newly placed block at that coordinate is free.
-        if (individuallyProtected) {
-            protectedBlocks.remove(key);
+        // Creative can remove RT Blocks. Remove both coordinates of a
+        // multi-block structure (for example, a door or bed) to avoid stale data.
+        boolean changed = false;
+        for (BlockKey relatedKey : getPlacedStructureKeys(event.getBlock())) {
+            changed |= protectedBlocks.remove(relatedKey);
+        }
+        if (changed) {
             saveProtectionData();
         }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onProtectedBlockPlace(BlockPlaceEvent event) {
-        if (event.getPlayer().getGameMode() == GameMode.CREATIVE) {
+        Player player = event.getPlayer();
+        boolean creative = player.getGameMode() == GameMode.CREATIVE;
+        boolean protectedItem = isProtectedBlockItem(event.getItemInHand());
+
+        // Survival players cannot place ordinary blocks into an already protected
+        // RT Block coordinate or RT Private region. Creative bypasses this rule.
+        if (!creative && isProtected(event.getBlockPlaced())) {
+            event.setCancelled(true);
+            player.sendMessage("§cВ этой зоне RT нельзя размещать блоки.");
             return;
         }
-        if (isProtected(event.getBlockPlaced())) {
-            event.setCancelled(true);
-            event.getPlayer().sendMessage("§cВ этой зоне RT Private нельзя размещать блоки.");
+
+        // The PDC marker stays on the entire item stack, so every block placed
+        // from that stack receives its own persistent protection entry.
+        if (protectedItem) {
+            Set<BlockKey> placedKeys = getPlacedStructureKeys(event.getBlockPlaced());
+            if (protectedBlocks.addAll(placedKeys)) {
+                saveProtectionData();
+            }
+            player.sendMessage("§aRT Block установлен: этот блок защищён от выживания, взрывов и поршней.");
         }
     }
 
@@ -725,42 +801,49 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
     }
 
     private void handleRtBlockCommand(CommandSender sender, String[] args) {
-        if (args.length > 0 && args[0].equalsIgnoreCase("list")) {
-            sender.sendMessage("§6Защищённых отдельных блоков: §e" + protectedBlocks.size());
+        if (args.length == 1 && args[0].equalsIgnoreCase("list")) {
+            sender.sendMessage("§6Установленных защищённых RT Blocks: §e" + protectedBlocks.size());
             return;
         }
 
         if (!(sender instanceof Player player)) {
-            sender.sendMessage("§cЭту команду нужно использовать в игре, глядя на блок.");
+            sender.sendMessage("§cКоманду /rt_block нужно использовать в игре, держа блок в основной руке.");
             return;
         }
 
-        Block target = player.getTargetBlockExact(6);
-        if (target == null) {
-            player.sendMessage("§cПосмотри на блок в пределах 6 блоков.");
-            return;
-        }
-
-        BlockKey key = BlockKey.from(target);
-        boolean remove = args.length > 0
-                && (args[0].equalsIgnoreCase("remove") || args[0].equalsIgnoreCase("delete"));
-
-        if (remove) {
-            if (!protectedBlocks.remove(key)) {
-                player.sendMessage("§cЭтот блок не был отдельно защищён.");
+        if (args.length > 0 && (args[0].equalsIgnoreCase("unmark")
+                || args[0].equalsIgnoreCase("off") || args[0].equalsIgnoreCase("clear"))) {
+            ItemStack held = player.getInventory().getItemInMainHand();
+            if (!isProtectedBlockItem(held)) {
+                player.sendMessage("§eВ основной руке нет предмета с меткой RT Block.");
                 return;
             }
-            saveProtectionData();
-            player.sendMessage("§aЗащита с блока снята.");
+            markProtectedBlockItem(held, false);
+            player.getInventory().setItemInMainHand(held);
+            player.sendMessage("§aМетка RT Block снята со всей стопки.");
             return;
         }
 
-        if (protectedBlocks.add(key)) {
-            saveProtectionData();
-            player.sendMessage("§aБлок защищён RT Block. Сломать его можно только в креативе.");
-        } else {
-            player.sendMessage("§eЭтот блок уже защищён.");
+        if (args.length != 0) {
+            player.sendMessage("§eИспользование: /rt_block — пометить блок в руке; /rt_block unmark — снять метку; /rt_block list — статистика.");
+            return;
         }
+
+        ItemStack held = player.getInventory().getItemInMainHand();
+        if (held == null || held.getType().isAir() || !held.getType().isBlock()) {
+            player.sendMessage("§cВозьми в основную руку любой блок и повтори /rt_block.");
+            return;
+        }
+
+        if (isProtectedBlockItem(held)) {
+            player.sendMessage("§eЭта стопка уже помечена RT Block. Каждый установленный блок будет защищён.");
+            return;
+        }
+
+        markProtectedBlockItem(held, true);
+        player.getInventory().setItemInMainHand(held);
+        player.sendMessage("§aВся стопка §f" + held.getType().name()
+                + " §aпомечена RT Block. Каждый блок из неё будет защищён после установки.");
     }
 
     private void handleRtPrivateCommand(CommandSender sender, String[] args) {
@@ -992,8 +1075,9 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         sender.sendMessage("§e/rt give door <игрок> [количество] §7— выдать специальную дверь РТ");
         sender.sendMessage("§e/rt removedoor §7— снять защиту с двери, на которую смотришь");
         sender.sendMessage("§e/rt reload §7— перезагрузить систему");
-        sender.sendMessage("§e/rt_block §7— защитить блок, на который смотришь");
-        sender.sendMessage("§e/rt_block remove §7— снять защиту с блока");
+        sender.sendMessage("§e/rt_block §7— пометить блок в основной руке: каждый установленный блок будет защищён");
+        sender.sendMessage("§e/rt_block unmark §7— снять метку со стопки в руке");
+        sender.sendMessage("§e/rt_block list §7— количество установленных защищённых блоков");
         sender.sendMessage("§e/rt_private §7— получить топор для выделения привата");
     }
 
@@ -1006,7 +1090,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         String commandName = command.getName().toLowerCase();
         if (commandName.equals("rt_block")) {
             if (args.length == 1) {
-                return filter(List.of("remove", "list"), args[0]);
+                return filter(List.of("unmark", "off", "clear", "list"), args[0]);
             }
             return List.of();
         }
