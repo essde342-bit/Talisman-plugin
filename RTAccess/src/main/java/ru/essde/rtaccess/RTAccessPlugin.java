@@ -1,7 +1,9 @@
 package ru.essde.rtaccess;
 
 import org.bukkit.Bukkit;
+import org.bukkit.GameMode;
 import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -15,18 +17,25 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
-import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.block.BlockPistonExtendEvent;
+import org.bukkit.event.block.BlockPistonRetractEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.BlockRedstoneEvent;
+import org.bukkit.event.block.BlockSpreadEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
+import org.bukkit.event.player.PlayerBucketFillEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataType;
-import org.bukkit.NamespacedKey;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -37,33 +46,52 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.UUID;
+import java.util.regex.Pattern;
 
 public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExecutor {
 
     private static final long DOOR_OPEN_TICKS = 5L * 60L * 20L;
     private static final String ITEM_CARD = "blue_keycard";
     private static final String ITEM_DOOR = "rt_door";
+    private static final Pattern REGION_NAME = Pattern.compile("[a-zA-Z0-9_-]{1,32}");
 
     private NamespacedKey itemTypeKey;
+    private NamespacedKey privateWandKey;
+
     private final Set<DoorKey> customDoors = new HashSet<>();
     private final Map<DoorKey, BukkitTask> closeTasks = new HashMap<>();
+
+    private final Set<BlockKey> protectedBlocks = new HashSet<>();
+    private final Map<String, PrivateRegion> privateRegions = new HashMap<>();
+    private final Map<UUID, Selection> selections = new HashMap<>();
 
     @Override
     public void onEnable() {
         itemTypeKey = new NamespacedKey(this, "rt_item_type");
+        privateWandKey = new NamespacedKey(this, "rt_private_wand");
+
         loadDoors();
+        loadProtectionData();
 
         Objects.requireNonNull(getCommand("rtaccess"), "Command 'rtaccess' is missing from plugin.yml")
                 .setExecutor(this);
-        Objects.requireNonNull(getCommand("rtaccess"))
-                .setTabCompleter(this);
+        Objects.requireNonNull(getCommand("rtaccess")).setTabCompleter(this);
+
+        Objects.requireNonNull(getCommand("rt_block"), "Command 'rt_block' is missing from plugin.yml")
+                .setExecutor(this);
+        Objects.requireNonNull(getCommand("rt_block")).setTabCompleter(this);
+
+        Objects.requireNonNull(getCommand("rt_private"), "Command 'rt_private' is missing from plugin.yml")
+                .setExecutor(this);
+        Objects.requireNonNull(getCommand("rt_private")).setTabCompleter(this);
 
         getServer().getPluginManager().registerEvents(this, this);
-
-        // Any door left open by a previous server session is closed at startup.
         Bukkit.getScheduler().runTask(this, this::closeDoorsInLoadedChunks);
 
-        getLogger().info("RTAccess enabled. Registered custom doors: " + customDoors.size());
+        getLogger().info("RTAccess enabled. Doors: " + customDoors.size()
+                + ", protected blocks: " + protectedBlocks.size()
+                + ", private regions: " + privateRegions.size());
     }
 
     @Override
@@ -74,10 +102,11 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         closeTasks.clear();
         closeDoorsInLoadedChunks();
         saveDoors();
+        saveProtectionData();
     }
 
     // ---------------------------------------------------------------------
-    // Items
+    // Custom items
     // ---------------------------------------------------------------------
 
     private ItemStack createKeycard(int amount) {
@@ -90,14 +119,11 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
                 "§8Не исчезает после использования."
         ));
 
-        // Minecraft 1.21.4 resource-pack model selector:
-        // assets/minecraft/items/paper.json selects this string value.
         org.bukkit.inventory.meta.components.CustomModelDataComponent modelData =
                 meta.getCustomModelDataComponent();
         modelData.setStrings(List.of("blue_keycard"));
         meta.setCustomModelDataComponent(modelData);
 
-        // Persistent data remains the server-side identity used by RTAccess.
         meta.getPersistentDataContainer().set(itemTypeKey, PersistentDataType.STRING, ITEM_CARD);
         item.setItemMeta(meta);
         return item;
@@ -117,6 +143,20 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         return item;
     }
 
+    private ItemStack createPrivateWand() {
+        ItemStack item = new ItemStack(Material.WOODEN_AXE);
+        ItemMeta meta = item.getItemMeta();
+        meta.setDisplayName("§d§lRT Private Wand");
+        meta.setLore(List.of(
+                "§7ЛКМ по блоку — первая точка.",
+                "§7ПКМ по блоку — вторая точка.",
+                "§8Затем: /rt_private create <название>"
+        ));
+        meta.getPersistentDataContainer().set(privateWandKey, PersistentDataType.BYTE, (byte) 1);
+        item.setItemMeta(meta);
+        return item;
+    }
+
     private boolean isTaggedItem(ItemStack item, String expectedType) {
         if (item == null || item.getType().isAir() || !item.hasItemMeta()) {
             return false;
@@ -126,10 +166,80 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         return expectedType.equals(type);
     }
 
+    private boolean isPrivateWand(ItemStack item) {
+        if (item == null || item.getType() != Material.WOODEN_AXE || !item.hasItemMeta()) {
+            return false;
+        }
+        Byte marker = item.getItemMeta().getPersistentDataContainer()
+                .get(privateWandKey, PersistentDataType.BYTE);
+        return marker != null && marker == (byte) 1;
+    }
+
     private void giveItem(Player target, ItemStack item) {
         Map<Integer, ItemStack> overflow = target.getInventory().addItem(item);
         overflow.values().forEach(leftover ->
                 target.getWorld().dropItemNaturally(target.getLocation(), leftover));
+    }
+
+    // ---------------------------------------------------------------------
+    // Private wand selection
+    // ---------------------------------------------------------------------
+
+    private boolean handlePrivateWand(PlayerInteractEvent event) {
+        if (event.getHand() != EquipmentSlot.HAND
+                || (event.getAction() != Action.LEFT_CLICK_BLOCK
+                && event.getAction() != Action.RIGHT_CLICK_BLOCK)
+                || !isPrivateWand(event.getPlayer().getInventory().getItemInMainHand())) {
+            return false;
+        }
+
+        Block clicked = event.getClickedBlock();
+        if (clicked == null) {
+            return false;
+        }
+
+        event.setCancelled(true);
+
+        SelectionPoint point = SelectionPoint.from(clicked);
+        Player player = event.getPlayer();
+
+        if (event.getAction() == Action.LEFT_CLICK_BLOCK) {
+            setSelectionPoint(player, true, point);
+            player.sendMessage("§d[RT Private] §aПервая точка: §f"
+                    + point.x + ", " + point.y + ", " + point.z);
+        } else {
+            setSelectionPoint(player, false, point);
+            player.sendMessage("§d[RT Private] §aВторая точка: §f"
+                    + point.x + ", " + point.y + ", " + point.z);
+        }
+        return true;
+    }
+
+    private void setSelectionPoint(Player player, boolean first, SelectionPoint point) {
+        UUID id = player.getUniqueId();
+        Selection old = selections.get(id);
+        SelectionPoint pos1 = old == null ? null : old.pos1;
+        SelectionPoint pos2 = old == null ? null : old.pos2;
+
+        if (first) {
+            pos1 = point;
+        } else {
+            pos2 = point;
+        }
+        selections.put(id, new Selection(pos1, pos2));
+    }
+
+    private void setSelectionFromLook(Player player, boolean first) {
+        Block target = player.getTargetBlockExact(6);
+        if (target == null) {
+            player.sendMessage("§cПосмотри на блок в пределах 6 блоков.");
+            return;
+        }
+
+        SelectionPoint point = SelectionPoint.from(target);
+        setSelectionPoint(player, first, point);
+        player.sendMessage((first ? "§d[RT Private] §aПервая" : "§d[RT Private] §aВторая")
+                + " точка установлена: §f" + point.x + ", " + point.y + ", " + point.z);
     }
 
     // ---------------------------------------------------------------------
@@ -158,6 +268,10 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onDoorInteract(PlayerInteractEvent event) {
+        if (handlePrivateWand(event)) {
+            return;
+        }
+
         if (event.getAction() != Action.LEFT_CLICK_BLOCK
                 && event.getAction() != Action.RIGHT_CLICK_BLOCK) {
             return;
@@ -178,7 +292,6 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
             return;
         }
 
-        // Prevent normal interaction from bypassing the keycard requirement.
         event.setCancelled(true);
 
         if (event.getHand() != EquipmentSlot.HAND) {
@@ -201,18 +314,28 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
     public void onCustomDoorBreak(BlockBreakEvent event) {
         Block base = getBottomDoorBlock(event.getBlock());
         if (base != null && customDoors.contains(DoorKey.from(base))) {
-            event.setCancelled(true);
-            event.getPlayer().sendMessage("§cЭту дверь нельзя сломать обычным способом. Используй /rtaccess removedoor.");
+            if (event.getPlayer().getGameMode() == GameMode.CREATIVE) {
+                DoorKey key = DoorKey.from(base);
+                customDoors.remove(key);
+                BukkitTask task = closeTasks.remove(key);
+                if (task != null) {
+                    task.cancel();
+                }
+                saveDoors();
+            } else {
+                event.setCancelled(true);
+                event.getPlayer().sendMessage("§cЭту дверь нельзя сломать. Используй синюю ключ-карту.");
+            }
         }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onEntityExplosion(EntityExplodeEvent event) {
+    public void onDoorEntityExplosion(EntityExplodeEvent event) {
         event.blockList().removeIf(this::isCustomDoorBlock);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
-    public void onBlockExplosion(BlockExplodeEvent event) {
+    public void onDoorBlockExplosion(BlockExplodeEvent event) {
         event.blockList().removeIf(this::isCustomDoorBlock);
     }
 
@@ -243,8 +366,6 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
                 BlockFace.UP, BlockFace.DOWN, BlockFace.NORTH,
                 BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST)) {
             if (isCustomDoorBlock(poweredBlock.getRelative(face))) {
-                // Iron doors can normally be powered by redstone. Suppress
-                // direct redstone current next to our registered doors.
                 event.setNewCurrent(0);
                 return;
             }
@@ -284,7 +405,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
             base.setBlockData(lower, false);
         }
 
-        Block upperBlock = base.getRelative(org.bukkit.block.BlockFace.UP);
+        Block upperBlock = base.getRelative(BlockFace.UP);
         if (upperBlock.getType() == Material.IRON_DOOR
                 && upperBlock.getBlockData() instanceof Door upper) {
             upper.setOpen(open);
@@ -320,7 +441,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
             return null;
         }
         if (door.getHalf() == Bisected.Half.TOP) {
-            Block below = block.getRelative(org.bukkit.block.BlockFace.DOWN);
+            Block below = block.getRelative(BlockFace.DOWN);
             return below.getType() == Material.IRON_DOOR ? below : null;
         }
         return block;
@@ -329,6 +450,153 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
     private boolean isCustomDoorBlock(Block block) {
         Block base = getBottomDoorBlock(block);
         return base != null && customDoors.contains(DoorKey.from(base));
+    }
+
+    // ---------------------------------------------------------------------
+    // New protection: individual blocks and private cuboid regions
+    // ---------------------------------------------------------------------
+
+    private boolean isProtected(Block block) {
+        if (block == null) {
+            return false;
+        }
+        if (protectedBlocks.contains(BlockKey.from(block))) {
+            return true;
+        }
+        String world = block.getWorld().getName();
+        int x = block.getX();
+        int y = block.getY();
+        int z = block.getZ();
+        for (PrivateRegion region : privateRegions.values()) {
+            if (region.contains(world, x, y, z)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onProtectedBlockBreak(BlockBreakEvent event) {
+        BlockKey key = BlockKey.from(event.getBlock());
+        boolean individuallyProtected = protectedBlocks.contains(key);
+        if (!individuallyProtected && !isProtected(event.getBlock())) {
+            return;
+        }
+
+        if (event.getPlayer().getGameMode() != GameMode.CREATIVE) {
+            event.setCancelled(true);
+            event.getPlayer().sendMessage("§cЭтот блок защищён системой RT Private.");
+            return;
+        }
+
+        // Breaking an individually protected block in Creative consumes its
+        // protection entry, so a newly placed block at that coordinate is free.
+        if (individuallyProtected) {
+            protectedBlocks.remove(key);
+            saveProtectionData();
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onProtectedBlockPlace(BlockPlaceEvent event) {
+        if (event.getPlayer().getGameMode() == GameMode.CREATIVE) {
+            return;
+        }
+        if (isProtected(event.getBlockPlaced())) {
+            event.setCancelled(true);
+            event.getPlayer().sendMessage("§cВ этой зоне RT Private нельзя размещать блоки.");
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectEntityExplosions(EntityExplodeEvent event) {
+        event.blockList().removeIf(this::isProtected);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectBlockExplosions(BlockExplodeEvent event) {
+        event.blockList().removeIf(this::isProtected);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectPistonExtend(BlockPistonExtendEvent event) {
+        if (isProtected(event.getBlock())) {
+            event.setCancelled(true);
+            return;
+        }
+        for (Block moved : event.getBlocks()) {
+            if (isProtected(moved) || isProtected(moved.getRelative(event.getDirection()))) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectPistonRetract(BlockPistonRetractEvent event) {
+        if (isProtected(event.getBlock())) {
+            event.setCancelled(true);
+            return;
+        }
+        BlockFace pullDirection = event.getDirection().getOppositeFace();
+        for (Block moved : event.getBlocks()) {
+            if (isProtected(moved) || isProtected(moved.getRelative(pullDirection))) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectEntityBlockChanges(EntityChangeBlockEvent event) {
+        if (isProtected(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectBlockBurn(BlockBurnEvent event) {
+        if (isProtected(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectBlockIgnite(BlockIgniteEvent event) {
+        if (isProtected(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectBlockSpread(BlockSpreadEvent event) {
+        if (isProtected(event.getBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectFluidFlow(BlockFromToEvent event) {
+        if (isProtected(event.getToBlock())) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectBucketEmpty(PlayerBucketEmptyEvent event) {
+        Block target = event.getBlockClicked().getRelative(event.getBlockFace());
+        if (isProtected(target) && event.getPlayer().getGameMode() != GameMode.CREATIVE) {
+            event.setCancelled(true);
+            event.getPlayer().sendMessage("§cВ этой зоне RT Private нельзя выливать жидкости.");
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void protectBucketFill(PlayerBucketFillEvent event) {
+        if (isProtected(event.getBlockClicked()) && event.getPlayer().getGameMode() != GameMode.CREATIVE) {
+            event.setCancelled(true);
+            event.getPlayer().sendMessage("§cНельзя забирать жидкости из защищённой зоны RT Private.");
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -364,8 +632,74 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         saveConfig();
     }
 
+    private void loadProtectionData() {
+        protectedBlocks.clear();
+        privateRegions.clear();
+
+        for (Map<?, ?> entry : getConfig().getMapList("protected-blocks")) {
+            try {
+                protectedBlocks.add(new BlockKey(
+                        String.valueOf(entry.get("world")),
+                        ((Number) entry.get("x")).intValue(),
+                        ((Number) entry.get("y")).intValue(),
+                        ((Number) entry.get("z")).intValue()
+                ));
+            } catch (Exception exception) {
+                getLogger().warning("Не удалось загрузить защищённый блок: " + exception.getMessage());
+            }
+        }
+
+        for (Map<?, ?> entry : getConfig().getMapList("private-regions")) {
+            try {
+                PrivateRegion region = new PrivateRegion(
+                        String.valueOf(entry.get("name")).toLowerCase(),
+                        String.valueOf(entry.get("world")),
+                        ((Number) entry.get("min-x")).intValue(),
+                        ((Number) entry.get("min-y")).intValue(),
+                        ((Number) entry.get("min-z")).intValue(),
+                        ((Number) entry.get("max-x")).intValue(),
+                        ((Number) entry.get("max-y")).intValue(),
+                        ((Number) entry.get("max-z")).intValue()
+                );
+                privateRegions.put(region.name, region);
+            } catch (Exception exception) {
+                getLogger().warning("Не удалось загрузить приват RT: " + exception.getMessage());
+            }
+        }
+    }
+
+    private void saveProtectionData() {
+        List<Map<String, Object>> serializedBlocks = new ArrayList<>();
+        for (BlockKey key : protectedBlocks) {
+            Map<String, Object> entry = new HashMap<>();
+            entry.put("world", key.world);
+            entry.put("x", key.x);
+            entry.put("y", key.y);
+            entry.put("z", key.z);
+            serializedBlocks.add(entry);
+        }
+
+        List<Map<String, Object>> serializedRegions = new ArrayList<>();
+        for (PrivateRegion region : privateRegions.values()) {
+            Map<String, Object> entry = new HashMap<>();
+            entry.put("name", region.name);
+            entry.put("world", region.world);
+            entry.put("min-x", region.minX);
+            entry.put("min-y", region.minY);
+            entry.put("min-z", region.minZ);
+            entry.put("max-x", region.maxX);
+            entry.put("max-y", region.maxY);
+            entry.put("max-z", region.maxZ);
+            serializedRegions.add(entry);
+        }
+
+        getConfig().set("protected-blocks", serializedBlocks);
+        getConfig().set("private-regions", serializedRegions);
+        saveConfig();
+    }
+
     // ---------------------------------------------------------------------
-    // Admin commands
+    // Commands
     // ---------------------------------------------------------------------
 
     @Override
@@ -375,27 +709,210 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
             return true;
         }
 
+        String commandName = command.getName().toLowerCase();
+        if (commandName.equals("rt_block")) {
+            handleRtBlockCommand(sender, args);
+            return true;
+        }
+        if (commandName.equals("rt_private")) {
+            handleRtPrivateCommand(sender, args);
+            return true;
+        }
+
+        handleRtAccessCommand(sender, args);
+        return true;
+    }
+
+    private void handleRtBlockCommand(CommandSender sender, String[] args) {
+        if (args.length > 0 && args[0].equalsIgnoreCase("list")) {
+            sender.sendMessage("§6Защищённых отдельных блоков: §e" + protectedBlocks.size());
+            return;
+        }
+
+        if (!(sender instanceof Player player)) {
+            sender.sendMessage("§cЭту команду нужно использовать в игре, глядя на блок.");
+            return;
+        }
+
+        Block target = player.getTargetBlockExact(6);
+        if (target == null) {
+            player.sendMessage("§cПосмотри на блок в пределах 6 блоков.");
+            return;
+        }
+
+        BlockKey key = BlockKey.from(target);
+        boolean remove = args.length > 0
+                && (args[0].equalsIgnoreCase("remove") || args[0].equalsIgnoreCase("delete"));
+
+        if (remove) {
+            if (!protectedBlocks.remove(key)) {
+                player.sendMessage("§cЭтот блок не был отдельно защищён.");
+                return;
+            }
+            saveProtectionData();
+            player.sendMessage("§aЗащита с блока снята.");
+            return;
+        }
+
+        if (protectedBlocks.add(key)) {
+            saveProtectionData();
+            player.sendMessage("§aБлок защищён RT Block. Сломать его можно только в креативе.");
+        } else {
+            player.sendMessage("§eЭтот блок уже защищён.");
+        }
+    }
+
+    private void handleRtPrivateCommand(CommandSender sender, String[] args) {
+        if (args.length == 0 || args[0].equalsIgnoreCase("wand")) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("§cТопор RT Private можно получить только в игре.");
+                return;
+            }
+            giveItem(player, createPrivateWand());
+            player.sendMessage("§dRT Private: §fЛКМ — точка 1, ПКМ — точка 2.");
+            player.sendMessage("§7После выбора введи: §e/rt_private create <название>");
+            return;
+        }
+
+        String sub = args[0].toLowerCase();
+        if (sub.equals("pos1") || sub.equals("pos2")) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("§cКоманду нужно использовать в игре.");
+                return;
+            }
+            setSelectionFromLook(player, sub.equals("pos1"));
+            return;
+        }
+
+        if (sub.equals("create")) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("§cСоздать приват можно только в игре после выбора двух точек.");
+                return;
+            }
+            if (args.length != 2 || !REGION_NAME.matcher(args[1]).matches()) {
+                player.sendMessage("§cИспользование: /rt_private create <название>");
+                player.sendMessage("§7Название: латиница, цифры, дефис или подчёркивание; до 32 символов.");
+                return;
+            }
+
+            Selection selection = selections.get(player.getUniqueId());
+            if (selection == null || selection.pos1 == null || selection.pos2 == null) {
+                player.sendMessage("§cСначала выбери две точки деревянным топором RT Private.");
+                return;
+            }
+            if (!selection.pos1.world.equals(selection.pos2.world)) {
+                player.sendMessage("§cОбе точки должны быть в одном мире.");
+                return;
+            }
+
+            String name = args[1].toLowerCase();
+            if (privateRegions.containsKey(name)) {
+                player.sendMessage("§cПриват с таким названием уже существует.");
+                return;
+            }
+
+            PrivateRegion region = PrivateRegion.from(name, selection.pos1, selection.pos2);
+            privateRegions.put(name, region);
+            saveProtectionData();
+            player.sendMessage("§aПриват §e" + name + " §aсоздан.");
+            player.sendMessage("§7Границы: §f(" + region.minX + ", " + region.minY + ", " + region.minZ
+                    + ") — (" + region.maxX + ", " + region.maxY + ", " + region.maxZ + ")");
+            player.sendMessage("§7Все блоки внутри защищены. Изменять их можно только в креативе.");
+            return;
+        }
+
+        if (sub.equals("delete") || sub.equals("remove")) {
+            if (args.length != 2) {
+                sender.sendMessage("§cИспользование: /rt_private delete <название>");
+                return;
+            }
+            PrivateRegion removed = privateRegions.remove(args[1].toLowerCase());
+            if (removed == null) {
+                sender.sendMessage("§cПриват с таким названием не найден.");
+                return;
+            }
+            saveProtectionData();
+            sender.sendMessage("§aПриват §e" + removed.name + " §aудалён.");
+            return;
+        }
+
+        if (sub.equals("list")) {
+            if (privateRegions.isEmpty()) {
+                sender.sendMessage("§eПриватов RT Private пока нет.");
+                return;
+            }
+            sender.sendMessage("§6Приваты RT Private:");
+            privateRegions.values().stream()
+                    .sorted((a, b) -> a.name.compareToIgnoreCase(b.name))
+                    .forEach(region -> sender.sendMessage("§e- " + region.name
+                            + " §7(" + region.world + ")"));
+            return;
+        }
+
+        if (sub.equals("info")) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("§cКоманду нужно использовать в игре.");
+                return;
+            }
+            String world = player.getWorld().getName();
+            int x = player.getLocation().getBlockX();
+            int y = player.getLocation().getBlockY();
+            int z = player.getLocation().getBlockZ();
+            List<String> found = privateRegions.values().stream()
+                    .filter(region -> region.contains(world, x, y, z))
+                    .map(region -> region.name)
+                    .sorted()
+                    .toList();
+            if (found.isEmpty()) {
+                player.sendMessage("§eТы не находишься внутри привата RT Private.");
+            } else {
+                player.sendMessage("§aПриваты в этой точке: §e" + String.join(", ", found));
+            }
+            return;
+        }
+
+        if (sub.equals("clear")) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("§cКоманду нужно использовать в игре.");
+                return;
+            }
+            selections.remove(player.getUniqueId());
+            player.sendMessage("§aВыделение RT Private очищено.");
+            return;
+        }
+
+        sender.sendMessage("§6Команды RT Private:");
+        sender.sendMessage("§e/rt_private §7— получить деревянный топор выделения");
+        sender.sendMessage("§e/rt_private pos1|pos2 §7— поставить точку по блоку, на который смотришь");
+        sender.sendMessage("§e/rt_private create <название> §7— создать приват по двум точкам");
+        sender.sendMessage("§e/rt_private delete <название> §7— удалить приват");
+        sender.sendMessage("§e/rt_private list §7— список приватов");
+        sender.sendMessage("§e/rt_private info §7— узнать приват в текущей точке");
+        sender.sendMessage("§e/rt_private clear §7— сбросить выделение");
+    }
+
+    private void handleRtAccessCommand(CommandSender sender, String[] args) {
         if (args.length == 0) {
             sendHelp(sender);
-            return true;
+            return;
         }
 
         if (args[0].equalsIgnoreCase("give")) {
             if (args.length < 3 || args.length > 4) {
-                sender.sendMessage("§cИспользование: /rtaccess give <card|door> <игрок> [количество]");
-                return true;
+                sender.sendMessage("§cИспользование: /rt give <card|door> <игрок> [количество]");
+                return;
             }
 
             String type = args[1].toLowerCase();
             if (!type.equals("card") && !type.equals("door")) {
                 sender.sendMessage("§cТип предмета: card или door.");
-                return true;
+                return;
             }
 
             Player target = Bukkit.getPlayerExact(args[2]);
             if (target == null) {
                 sender.sendMessage("§cИгрок должен быть онлайн.");
-                return true;
+                return;
             }
 
             int amount = 1;
@@ -404,12 +921,12 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
                     amount = Integer.parseInt(args[3]);
                 } catch (NumberFormatException exception) {
                     sender.sendMessage("§cКоличество должно быть числом от 1 до 64.");
-                    return true;
+                    return;
                 }
             }
             if (amount < 1 || amount > 64) {
                 sender.sendMessage("§cКоличество должно быть от 1 до 64.");
-                return true;
+                return;
             }
 
             ItemStack item = type.equals("card") ? createKeycard(amount) : createDoorItem(amount);
@@ -418,26 +935,26 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
                     ? "§bТы получил синюю ключ-карту."
                     : "§6Ты получил специальную дверь РТ.");
             sender.sendMessage("§aПредмет выдан игроку " + target.getName() + ".");
-            return true;
+            return;
         }
 
         if (args[0].equalsIgnoreCase("removedoor")) {
             if (!(sender instanceof Player player)) {
                 sender.sendMessage("§cКоманду нужно использовать в игре, глядя на специальную дверь.");
-                return true;
+                return;
             }
 
             Block target = player.getTargetBlockExact(6);
             Block base = target == null ? null : getBottomDoorBlock(target);
             if (base == null) {
                 player.sendMessage("§cПосмотри на специальную железную дверь с расстояния до 6 блоков.");
-                return true;
+                return;
             }
 
             DoorKey key = DoorKey.from(base);
             if (!customDoors.remove(key)) {
                 player.sendMessage("§cЭта дверь не зарегистрирована как дверь РТ.");
-                return true;
+                return;
             }
 
             BukkitTask task = closeTasks.remove(key);
@@ -447,7 +964,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
             setDoorOpen(base, false);
             saveDoors();
             player.sendMessage("§aДверь удалена из системы РТ. Теперь её можно сломать обычным способом.");
-            return true;
+            return;
         }
 
         if (args[0].equalsIgnoreCase("reload")) {
@@ -457,26 +974,53 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
             closeTasks.clear();
             reloadConfig();
             loadDoors();
+            loadProtectionData();
             closeDoorsInLoadedChunks();
-            sender.sendMessage("§aСписок дверей РТ перезагружен. Зарегистрировано: " + customDoors.size());
-            return true;
+            sender.sendMessage("§aСистема RTAccess перезагружена. Дверей: " + customDoors.size()
+                    + ", блоков: " + protectedBlocks.size()
+                    + ", приватов: " + privateRegions.size());
+            return;
         }
 
         sendHelp(sender);
-        return true;
     }
 
     private void sendHelp(CommandSender sender) {
         sender.sendMessage("§6Команды RTAccess:");
-        sender.sendMessage("§e/rtaccess give card <игрок> [количество] §7— выдать синюю ключ-карту");
-        sender.sendMessage("§e/rtaccess give door <игрок> [количество] §7— выдать специальную дверь РТ");
-        sender.sendMessage("§e/rtaccess removedoor §7— снять защиту с двери, на которую смотришь");
-        sender.sendMessage("§e/rtaccess reload §7— перечитать сохранённые двери");
+        sender.sendMessage("§e/rt give card <игрок> [количество] §7— выдать синюю ключ-карту");
+        sender.sendMessage("§e/rt give door <игрок> [количество] §7— выдать специальную дверь РТ");
+        sender.sendMessage("§e/rt removedoor §7— снять защиту с двери, на которую смотришь");
+        sender.sendMessage("§e/rt reload §7— перезагрузить систему");
+        sender.sendMessage("§e/rt_block §7— защитить блок, на который смотришь");
+        sender.sendMessage("§e/rt_block remove §7— снять защиту с блока");
+        sender.sendMessage("§e/rt_private §7— получить топор для выделения привата");
     }
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (!sender.hasPermission("rtaccess.admin")) {
+            return List.of();
+        }
+
+        String commandName = command.getName().toLowerCase();
+        if (commandName.equals("rt_block")) {
+            if (args.length == 1) {
+                return filter(List.of("remove", "list"), args[0]);
+            }
+            return List.of();
+        }
+
+        if (commandName.equals("rt_private")) {
+            if (args.length == 1) {
+                return filter(List.of("wand", "pos1", "pos2", "create", "delete", "list", "info", "clear"), args[0]);
+            }
+            if (args.length == 2 && (args[0].equalsIgnoreCase("delete")
+                    || args[0].equalsIgnoreCase("remove"))) {
+                return privateRegions.keySet().stream()
+                        .filter(name -> name.startsWith(args[1].toLowerCase()))
+                        .sorted()
+                        .toList();
+            }
             return List.of();
         }
 
@@ -504,6 +1048,10 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
                 .toList();
     }
 
+    // ---------------------------------------------------------------------
+    // Coordinate records
+    // ---------------------------------------------------------------------
+
     private record DoorKey(String world, int x, int y, int z) {
         private static DoorKey from(Block block) {
             return new DoorKey(block.getWorld().getName(), block.getX(), block.getY(), block.getZ());
@@ -515,6 +1063,52 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
 
         private int chunkZ() {
             return z >> 4;
+        }
+    }
+
+    private record BlockKey(String world, int x, int y, int z) {
+        private static BlockKey from(Block block) {
+            return new BlockKey(block.getWorld().getName(), block.getX(), block.getY(), block.getZ());
+        }
+    }
+
+    private record SelectionPoint(String world, int x, int y, int z) {
+        private static SelectionPoint from(Block block) {
+            return new SelectionPoint(block.getWorld().getName(), block.getX(), block.getY(), block.getZ());
+        }
+    }
+
+    private record Selection(SelectionPoint pos1, SelectionPoint pos2) {
+    }
+
+    private record PrivateRegion(
+            String name,
+            String world,
+            int minX,
+            int minY,
+            int minZ,
+            int maxX,
+            int maxY,
+            int maxZ
+    ) {
+        private static PrivateRegion from(String name, SelectionPoint a, SelectionPoint b) {
+            return new PrivateRegion(
+                    name,
+                    a.world,
+                    Math.min(a.x, b.x),
+                    Math.min(a.y, b.y),
+                    Math.min(a.z, b.z),
+                    Math.max(a.x, b.x),
+                    Math.max(a.y, b.y),
+                    Math.max(a.z, b.z)
+            );
+        }
+
+        private boolean contains(String worldName, int x, int y, int z) {
+            return world.equals(worldName)
+                    && x >= minX && x <= maxX
+                    && y >= minY && y <= maxY
+                    && z >= minZ && z <= maxZ;
         }
     }
 }

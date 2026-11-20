@@ -2,7 +2,7 @@ name: RTAccess
 version: 1.0.0
 main: ru.essde.rtaccess.RTAccessPlugin
 api-version: '1.21.4'
-description: Custom RT doors opened with reusable blue keycards
+description: RT doors, unbreakable blocks and private regions for Paper 1.21.4
 author: essde342-bit
 
 commands:
@@ -11,8 +11,18 @@ commands:
     usage: /rtaccess <give|removedoor|reload>
     aliases: [rt]
     permission: rtaccess.admin
+  rt_block:
+    description: Защита отдельного блока RT Block
+    usage: /rt_block [remove|list]
+    aliases: [rtblock]
+    permission: rtaccess.admin
+  rt_private:
+    description: Выделение и создание защищённых зон RT Private
+    usage: /rt_private <wand|pos1|pos2|create|delete|list|info|clear>
+    aliases: [rtprivate]
+    permission: rtaccess.admin
 
 permissions:
   rtaccess.admin:
-    description: Выдача предметов и управление дверями РТ
+    description: Управление RTAccess, блоками и приватами
     default: op
