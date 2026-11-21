@@ -412,7 +412,8 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
                 }
 
                 String worldName = saved.getString("world", "");
-                if (Bukkit.getWorld(worldName) == null) {
+                World world = Bukkit.getWorld(worldName);
+                if (world == null) {
                     getLogger().warning("Skipping corpse " + rawId + ": world '"
                             + worldName + "' is not loaded.");
                     continue;
