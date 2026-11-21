@@ -297,8 +297,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         }
 
         SelectionPoint point = SelectionPoint.from(target);
-        setSelectionPoint(player, first, point);
-        player.sendMessage((first ? "§d[RT Private] §aПервая" : "§d[RT Private] §aВторая")
+        setSelectionPoint(player, first, point);        player.sendMessage((first ? "§d[RT Private] §aПервая" : "§d[RT Private] §aВторая")
                 + " точка установлена: §f" + point.x + ", " + point.y + ", " + point.z);
     }
 
@@ -516,12 +515,9 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
     // New protection: individual blocks and private cuboid regions
     // ---------------------------------------------------------------------
 
-    private boolean isProtected(Block block) {
+    private boolean isInsidePrivateRegion(Block block) {
         if (block == null) {
             return false;
-        }
-        if (protectedBlocks.contains(BlockKey.from(block))) {
-            return true;
         }
         String world = block.getWorld().getName();
         int x = block.getX();
@@ -533,6 +529,11 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
             }
         }
         return false;
+    }
+
+    private boolean isProtected(Block block) {
+        return block != null
+                && (protectedBlocks.contains(BlockKey.from(block)) || isInsidePrivateRegion(block));
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -566,11 +567,16 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         boolean creative = player.getGameMode() == GameMode.CREATIVE;
         boolean protectedItem = isProtectedBlockItem(event.getItemInHand());
 
-        // Survival players cannot place ordinary blocks into an already protected
-        // RT Block coordinate or RT Private region. Creative bypasses this rule.
-        if (!creative && isProtected(event.getBlockPlaced())) {
+        // Private regions reject block placement in every game mode.
+        // Individually protected RT Block coordinates retain the creative bypass.
+        if (isInsidePrivateRegion(event.getBlockPlaced())) {
             event.setCancelled(true);
-            player.sendMessage("§cВ этой зоне RT нельзя размещать блоки.");
+            player.sendMessage("§cВнутри привата RT Private нельзя размещать блоки.");
+            return;
+        }
+        if (!creative && protectedBlocks.contains(BlockKey.from(event.getBlockPlaced()))) {
+            event.setCancelled(true);
+            player.sendMessage("§cВ этой точке RT нельзя размещать блоки.");
             return;
         }
 
@@ -597,8 +603,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void protectPistonExtend(BlockPistonExtendEvent event) {
-        if (isProtected(event.getBlock())) {
-            event.setCancelled(true);
+        if (isProtected(event.getBlock())) {            event.setCancelled(true);
             return;
         }
         for (Block moved : event.getBlocks()) {
@@ -662,9 +667,10 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void protectBucketEmpty(PlayerBucketEmptyEvent event) {
         Block target = event.getBlockClicked().getRelative(event.getBlockFace());
-        if (isProtected(target) && event.getPlayer().getGameMode() != GameMode.CREATIVE) {
+        if (isInsidePrivateRegion(target)
+                || (isProtected(target) && event.getPlayer().getGameMode() != GameMode.CREATIVE)) {
             event.setCancelled(true);
-            event.getPlayer().sendMessage("§cВ этой зоне RT Private нельзя выливать жидкости.");
+            event.getPlayer().sendMessage("§cВнутри привата RT Private нельзя размещать жидкости.");
         }
     }
 
@@ -897,8 +903,7 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
 
             PrivateRegion region = PrivateRegion.from(name, selection.pos1, selection.pos2);
             privateRegions.put(name, region);
-            saveProtectionData();
-            player.sendMessage("§aПриват §e" + name + " §aсоздан.");
+            saveProtectionData();            player.sendMessage("§aПриват §e" + name + " §aсоздан.");
             player.sendMessage("§7Границы: §f(" + region.minX + ", " + region.minY + ", " + region.minZ
                     + ") — (" + region.maxX + ", " + region.maxY + ", " + region.maxZ + ")");
             player.sendMessage("§7Все блоки внутри защищены. Изменять их можно только в креативе.");
