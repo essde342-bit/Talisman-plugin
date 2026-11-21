@@ -8,19 +8,17 @@
     <version>1.0.0</version>
     <packaging>pom</packaging>
     <name>ServerPlugins</name>
-
     <properties>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <paper.version>1.21.4-R0.1-SNAPSHOT</paper.version>
     </properties>
-
     <modules>
         <module>TalismanPlugin</module>
         <module>CombatSystem</module>
         <module>RTAccess</module>
+        <module>CorpsePlugin</module>
     </modules>
-
     <repositories>
         <repository>
             <id>papermc</id>

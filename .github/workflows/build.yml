@@ -48,3 +48,11 @@ jobs:
           path: RTAccess/target/RTAccess-1.0.0.jar
           if-no-files-found: error
           retention-days: 30
+
+      - name: Upload CorpsePlugin
+        uses: actions/upload-artifact@v4
+        with:
+          name: CorpsePlugin-1.0.0
+          path: CorpsePlugin/target/CorpsePlugin-1.0.0.jar
+          if-no-files-found: error
+          retention-days: 30
