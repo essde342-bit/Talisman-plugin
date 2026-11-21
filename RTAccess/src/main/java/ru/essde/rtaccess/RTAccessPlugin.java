@@ -567,9 +567,9 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
         boolean creative = player.getGameMode() == GameMode.CREATIVE;
         boolean protectedItem = isProtectedBlockItem(event.getItemInHand());
 
-        // Private regions reject block placement in every game mode.
-        // Individually protected RT Block coordinates retain the creative bypass.
-        if (isInsidePrivateRegion(event.getBlockPlaced())) {
+        // Creative mode bypasses RT Private placement restrictions.
+        // Survival and adventure players cannot place blocks inside private regions.
+        if (!creative && isInsidePrivateRegion(event.getBlockPlaced())) {
             event.setCancelled(true);
             player.sendMessage("§cВнутри привата RT Private нельзя размещать блоки.");
             return;
@@ -667,8 +667,8 @@ public final class RTAccessPlugin extends JavaPlugin implements Listener, TabExe
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void protectBucketEmpty(PlayerBucketEmptyEvent event) {
         Block target = event.getBlockClicked().getRelative(event.getBlockFace());
-        if (isInsidePrivateRegion(target)
-                || (isProtected(target) && event.getPlayer().getGameMode() != GameMode.CREATIVE)) {
+        if (event.getPlayer().getGameMode() != GameMode.CREATIVE
+                && (isInsidePrivateRegion(target) || isProtected(target))) {
             event.setCancelled(true);
             event.getPlayer().sendMessage("§cВнутри привата RT Private нельзя размещать жидкости.");
         }
