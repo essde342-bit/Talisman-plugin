@@ -420,6 +420,7 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
 
                 long createdAt = saved.getLong("created-at", now);
                 if (now - createdAt >= lifetimeSeconds * 1000L) {
+                    removeCorpseEntities(id, world, saved.getDouble("x"), saved.getDouble("z"));
                     continue;
                 }
 
@@ -547,15 +548,19 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
 
         World world = Bukkit.getWorld(corpse.worldName);
         if (world != null) {
-            int chunkX = ((int) Math.floor(corpse.x)) >> 4;
-            int chunkZ = ((int) Math.floor(corpse.z)) >> 4;
-            for (Entity entity : world.getChunkAt(chunkX, chunkZ).getEntities()) {
-                if (corpseId.equals(getCorpseId(entity))) {
-                    entity.remove();
-                }
-            }
+            removeCorpseEntities(corpseId, world, corpse.x, corpse.z);
         }
         saveCorpses();
+    }
+
+    private void removeCorpseEntities(UUID corpseId, World world, double x, double z) {
+        int chunkX = ((int) Math.floor(x)) >> 4;
+        int chunkZ = ((int) Math.floor(z)) >> 4;
+        for (Entity entity : world.getChunkAt(chunkX, chunkZ).getEntities()) {
+            if (corpseId.equals(getCorpseId(entity))) {
+                entity.remove();
+            }
+        }
     }
 
     @EventHandler
