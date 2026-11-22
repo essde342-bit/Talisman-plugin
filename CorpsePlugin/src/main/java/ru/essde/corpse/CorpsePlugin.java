@@ -3,42 +3,61 @@ package ru.essde.corpse;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.entity.ArmorStand;
-import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Interaction;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
-import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
-import org.bukkit.event.player.PlayerArmorStandManipulateEvent;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.world.ChunkLoadEvent;
-import org.bukkit.inventory.EquipmentSlot;
+import io.papermc.paper.event.packet.PlayerChunkLoadEvent;
+import io.papermc.paper.event.packet.PlayerChunkUnloadEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
-import org.bukkit.inventory.meta.SkullMeta;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
-import org.bukkit.util.EulerAngle;
+
+import com.github.retrooper.packetevents.PacketEvents;
+import com.github.retrooper.packetevents.event.PacketListenerAbstract;
+import com.github.retrooper.packetevents.event.PacketReceiveEvent;
+import com.github.retrooper.packetevents.protocol.entity.data.EntityData;
+import com.github.retrooper.packetevents.protocol.entity.data.EntityDataTypes;
+import com.github.retrooper.packetevents.protocol.entity.pose.EntityPose;
+import com.github.retrooper.packetevents.protocol.entity.type.EntityTypes;
+import com.github.retrooper.packetevents.protocol.packettype.PacketType;
+import com.github.retrooper.packetevents.protocol.player.GameMode;
+import com.github.retrooper.packetevents.protocol.player.UserProfile;
+import com.github.retrooper.packetevents.wrapper.play.client.WrapperPlayClientInteractEntity;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerDestroyEntities;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityEquipment;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerEntityMetadata;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoRemove;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerPlayerInfoUpdate;
+import com.github.retrooper.packetevents.wrapper.play.server.WrapperPlayServerSpawnEntity;
+import io.github.retrooper.packetevents.util.SpigotConversionUtil;
+
+import java.nio.charset.StandardCharsets;
+import java.util.EnumSet;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 import java.io.File;
 import java.io.IOException;
@@ -52,9 +71,11 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
 
     private static final int INVENTORY_SIZE = 54;
     private static final int DEFAULT_LIFETIME_SECONDS = 1800;
-    private static final double BODY_VERTICAL_OFFSET = 0.55;
+    private static final byte ALL_SKIN_LAYERS = 0x7F;
 
     private final Map<UUID, CorpseRecord> corpses = new HashMap<>();
+    private final Map<Integer, UUID> fakeEntityToCorpse = new ConcurrentHashMap<>();
+    private PacketListenerAbstract interactionPacketListener;
 
     private NamespacedKey corpseIdKey;
     private NamespacedKey corpseRoleKey;
@@ -71,19 +92,32 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
                 getConfig().getInt("corpse-lifetime-seconds", DEFAULT_LIFETIME_SECONDS));
 
         getServer().getPluginManager().registerEvents(this, this);
+        registerInteractionPacketListener();
         if (getCommand("corpses") != null) {
             getCommand("corpses").setExecutor(this);
         }
 
         loadCorpses();
+        for (Player viewer : Bukkit.getOnlinePlayers()) {
+            for (CorpseRecord corpse : corpses.values()) {
+                spawnCorpseForViewerIfNearby(corpse, viewer);
+            }
+        }
         getLogger().info("CorpsePlugin enabled. Loaded corpses: " + corpses.size());
     }
 
     @Override
     public void onDisable() {
+        if (interactionPacketListener != null) {
+            PacketEvents.getAPI().getEventManager().unregisterListener(interactionPacketListener);
+            interactionPacketListener = null;
+        }
         for (CorpseRecord corpse : corpses.values()) {
             if (corpse.expireTask != null) {
                 corpse.expireTask.cancel();
+            }
+            for (Player viewer : Bukkit.getOnlinePlayers()) {
+                hideCorpseFromViewer(corpse, viewer);
             }
         }
         saveCorpses();
@@ -113,7 +147,8 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
                 player.getLocation().getZ(),
                 player.getLocation().getYaw(),
                 System.currentTimeMillis(),
-                player.getInventory().getHeldItemSlot()
+                player.getInventory().getHeldItemSlot(),
+                newFakeEntityId()
         );
 
         PlayerInventory inventory = player.getInventory();
@@ -140,6 +175,9 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
         corpses.put(corpse.id, corpse);
         spawnVisuals(corpse);
         updateModel(corpse);
+        for (Player viewer : Bukkit.getOnlinePlayers()) {
+            spawnCorpseForViewerIfNearby(corpse, viewer);
+        }
         scheduleDespawn(corpse);
         saveCorpses();
     }
@@ -151,8 +189,8 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
         holder.setInventory(corpse.inventory);
     }
 
-    // Build a horizontal mannequin, a floating name and a separate invisible
-    // interaction hitbox. This avoids exposing the armor stand's equipment slots.
+    // The visible body is a client-side player entity using the classic Steve model.
+    // The server-side Interaction entity remains as a fallback click target.
     private void spawnVisuals(CorpseRecord corpse) {
         World world = Bukkit.getWorld(corpse.worldName);
         if (world == null) {
@@ -164,54 +202,13 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
         int chunkZ = ((int) Math.floor(corpse.z)) >> 4;
         Chunk chunk = world.getChunkAt(chunkX, chunkZ);
 
-        Entity bodyEntity = findTaggedEntity(chunk, corpse.id, "body");
-        if (bodyEntity instanceof ArmorStand stand) {
-            corpse.body = stand;
-        } else {
-            Location bodyLocation = corpse.location().subtract(0, BODY_VERTICAL_OFFSET, 0);
-            if (bodyLocation.getY() < world.getMinHeight() + 0.1) {
-                bodyLocation.setY(world.getMinHeight() + 0.1);
-            }
-            corpse.body = world.spawn(bodyLocation, ArmorStand.class, stand -> {
-                stand.setVisible(true);
-                stand.setArms(true);
-                stand.setBasePlate(false);
-                stand.setMarker(false);
-                stand.setGravity(false);
-                stand.setInvulnerable(true);
-                stand.setSilent(true);
-                stand.setPersistent(true);
-                stand.setCanPickupItems(false);
-                stand.setCollidable(false);
-                stand.setRemoveWhenFarAway(false);
-                stand.setRotation(corpse.yaw, 0);
-
-                double angle = Math.PI / 2.0;
-                stand.setBodyPose(new EulerAngle(angle, 0, 0));
-                stand.setHeadPose(new EulerAngle(angle, 0, 0));
-                stand.setLeftArmPose(new EulerAngle(angle, 0, -0.12));
-                stand.setRightArmPose(new EulerAngle(angle, 0, 0.12));
-                stand.setLeftLegPose(new EulerAngle(angle, 0, -0.04));
-                stand.setRightLegPose(new EulerAngle(angle, 0, 0.04));
-                tagEntity(stand, corpse.id, "body");
-            });
+        Entity oldBody = findTaggedEntity(chunk, corpse.id, "body");
+        if (oldBody != null) {
+            oldBody.remove();
         }
-
-        Entity labelEntity = findTaggedEntity(chunk, corpse.id, "label");
-        if (labelEntity instanceof TextDisplay display) {
-            corpse.label = display;
-        } else {
-            Location labelLocation = corpse.location().add(0, 0.9, 0);
-            corpse.label = world.spawn(labelLocation, TextDisplay.class, display -> {
-                display.setText("§f§l" + corpse.ownerName);
-                display.setBillboard(Display.Billboard.CENTER);
-                display.setSeeThrough(true);
-                display.setShadowed(true);
-                display.setPersistent(true);
-                display.setInvulnerable(true);
-                display.setSilent(true);
-                tagEntity(display, corpse.id, "label");
-            });
+        Entity oldLabel = findTaggedEntity(chunk, corpse.id, "label");
+        if (oldLabel != null) {
+            oldLabel.remove();
         }
 
         Entity hitboxEntity = findTaggedEntity(chunk, corpse.id, "hitbox");
@@ -229,8 +226,6 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
                 tagEntity(interaction, corpse.id, "hitbox");
             });
         }
-
-        updateModel(corpse);
     }
 
     private Entity findTaggedEntity(Chunk chunk, UUID corpseId, String role) {
@@ -277,31 +272,49 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
     }
 
     private void updateModel(CorpseRecord corpse) {
-        ArmorStand body = corpse.body;
-        if (body == null || !body.isValid() || corpse.inventory == null || body.getEquipment() == null) {
+        fakeEntityToCorpse.put(corpse.fakeEntityId, corpse.id);
+        if (corpse.inventory == null) {
             return;
         }
+        for (UUID viewerId : new ArrayList<>(corpse.visibleTo)) {
+            Player viewer = Bukkit.getPlayer(viewerId);
+            if (viewer != null && viewer.isOnline()) {
+                sendCorpseEquipment(corpse, viewer);
+            } else {
+                corpse.visibleTo.remove(viewerId);
+            }
+        }
+    }
 
-        var equipment = body.getEquipment();
-        equipment.setHelmet(stillLootable(corpse, corpse.helmet)
-                ? cloneItem(corpse.helmet) : createPlayerHead(corpse.ownerId));
-        equipment.setChestplate(stillLootable(corpse, corpse.chestplate)
-                ? cloneItem(corpse.chestplate) : null);
-        equipment.setLeggings(stillLootable(corpse, corpse.leggings)
-                ? cloneItem(corpse.leggings) : null);
-        equipment.setBoots(stillLootable(corpse, corpse.boots)
-                ? cloneItem(corpse.boots) : null);
-        equipment.setItem(EquipmentSlot.HAND, stillLootable(corpse, corpse.mainHand)
-                ? cloneItem(corpse.mainHand) : null);
-        equipment.setItem(EquipmentSlot.OFF_HAND, stillLootable(corpse, corpse.offhand)
-                ? cloneItem(corpse.offhand) : null);
+    private void sendCorpseEquipment(CorpseRecord corpse, Player viewer) {
+        List<com.github.retrooper.packetevents.protocol.player.Equipment> equipment = List.of(
+                new com.github.retrooper.packetevents.protocol.player.Equipment(
+                        com.github.retrooper.packetevents.protocol.player.EquipmentSlot.MAIN_HAND,
+                        toPacketItem(stillLootable(corpse, corpse.mainHand) ? corpse.mainHand : null)),
+                new com.github.retrooper.packetevents.protocol.player.Equipment(
+                        com.github.retrooper.packetevents.protocol.player.EquipmentSlot.OFF_HAND,
+                        toPacketItem(stillLootable(corpse, corpse.offhand) ? corpse.offhand : null)),
+                new com.github.retrooper.packetevents.protocol.player.Equipment(
+                        com.github.retrooper.packetevents.protocol.player.EquipmentSlot.HELMET,
+                        toPacketItem(stillLootable(corpse, corpse.helmet) ? corpse.helmet : null)),
+                new com.github.retrooper.packetevents.protocol.player.Equipment(
+                        com.github.retrooper.packetevents.protocol.player.EquipmentSlot.CHEST_PLATE,
+                        toPacketItem(stillLootable(corpse, corpse.chestplate) ? corpse.chestplate : null)),
+                new com.github.retrooper.packetevents.protocol.player.Equipment(
+                        com.github.retrooper.packetevents.protocol.player.EquipmentSlot.LEGGINGS,
+                        toPacketItem(stillLootable(corpse, corpse.leggings) ? corpse.leggings : null)),
+                new com.github.retrooper.packetevents.protocol.player.Equipment(
+                        com.github.retrooper.packetevents.protocol.player.EquipmentSlot.BOOTS,
+                        toPacketItem(stillLootable(corpse, corpse.boots) ? corpse.boots : null))
+        );
+        PacketEvents.getAPI().getPlayerManager().sendPacket(
+                viewer, new WrapperPlayServerEntityEquipment(corpse.fakeEntityId, equipment));
+    }
 
-        equipment.setHelmetDropChance(0.0f);
-        equipment.setChestplateDropChance(0.0f);
-        equipment.setLeggingsDropChance(0.0f);
-        equipment.setBootsDropChance(0.0f);
-        equipment.setItemInMainHandDropChance(0.0f);
-        equipment.setItemInOffHandDropChance(0.0f);
+    private com.github.retrooper.packetevents.protocol.item.ItemStack toPacketItem(ItemStack item) {
+        return isEmpty(item)
+                ? com.github.retrooper.packetevents.protocol.item.ItemStack.EMPTY
+                : SpigotConversionUtil.fromBukkitItemStack(item);
     }
 
     private boolean stillLootable(CorpseRecord corpse, ItemStack original) {
@@ -317,16 +330,6 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
         return false;
     }
 
-    private ItemStack createPlayerHead(UUID ownerId) {
-        ItemStack head = new ItemStack(Material.PLAYER_HEAD);
-        if (head.getItemMeta() instanceof SkullMeta meta) {
-            OfflinePlayer owner = Bukkit.getOfflinePlayer(ownerId);
-            meta.setOwningPlayer(owner);
-            head.setItemMeta(meta);
-        }
-        return head;
-    }
-
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public void onCorpseInteract(PlayerInteractEntityEvent event) {
         UUID corpseId = getCorpseId(event.getRightClicked());
@@ -334,19 +337,167 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
             return;
         }
         event.setCancelled(true);
-        CorpseRecord corpse = corpses.get(corpseId);
-        if (corpse == null || corpse.inventory == null) {
-            event.getPlayer().sendMessage("§cЭтот труп уже исчез.");
-            return;
-        }
-        event.getPlayer().openInventory(corpse.inventory);
+        openCorpse(event.getPlayer(), corpseId);
     }
 
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onArmorStandManipulate(PlayerArmorStandManipulateEvent event) {
-        if (isCorpseEntity(event.getRightClicked())) {
-            event.setCancelled(true);
+    private void openCorpse(Player player, UUID corpseId) {
+        CorpseRecord corpse = corpses.get(corpseId);
+        if (corpse == null || corpse.inventory == null) {
+            player.sendMessage("§cЭтот труп уже исчез.");
+            return;
         }
+        player.openInventory(corpse.inventory);
+    }
+
+    private void registerInteractionPacketListener() {
+        interactionPacketListener = new PacketListenerAbstract() {
+            @Override
+            public void onPacketReceive(PacketReceiveEvent event) {
+                if (!PacketType.Play.Client.INTERACT_ENTITY.equals(event.getPacketType())) {
+                    return;
+                }
+                WrapperPlayClientInteractEntity packet = new WrapperPlayClientInteractEntity(event);
+                UUID corpseId = fakeEntityToCorpse.get(packet.getEntityId());
+                if (corpseId == null) {
+                    return;
+                }
+
+                event.setCancelled(true);
+                if (packet.getAction() != WrapperPlayClientInteractEntity.InteractAction.ATTACK) {
+                    Player player = event.getPlayer();
+                    Bukkit.getScheduler().runTask(CorpsePlugin.this, () -> {
+                        if (player != null && player.isOnline()) {
+                            openCorpse(player, corpseId);
+                        }
+                    });
+                }
+            }
+        };
+        PacketEvents.getAPI().getEventManager().registerListener(interactionPacketListener);
+    }
+
+    @EventHandler
+    public void onPlayerChunkLoad(PlayerChunkLoadEvent event) {
+        int chunkX = event.getChunk().getX();
+        int chunkZ = event.getChunk().getZ();
+        Player viewer = event.getPlayer();
+        for (CorpseRecord corpse : corpses.values()) {
+            if (isInChunk(corpse, event.getWorld().getName(), chunkX, chunkZ)) {
+                spawnCorpseForViewer(corpse, viewer);
+            }
+        }
+    }
+
+    @EventHandler
+    public void onPlayerChunkUnload(PlayerChunkUnloadEvent event) {
+        int chunkX = event.getChunk().getX();
+        int chunkZ = event.getChunk().getZ();
+        Player viewer = event.getPlayer();
+        for (CorpseRecord corpse : corpses.values()) {
+            if (isInChunk(corpse, event.getWorld().getName(), chunkX, chunkZ)) {
+                hideCorpseFromViewer(corpse, viewer);
+            }
+        }
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        UUID viewerId = event.getPlayer().getUniqueId();
+        for (CorpseRecord corpse : corpses.values()) {
+            corpse.visibleTo.remove(viewerId);
+        }
+    }
+
+    private boolean isInChunk(CorpseRecord corpse, String worldName, int chunkX, int chunkZ) {
+        return corpse.worldName.equals(worldName)
+                && (((int) Math.floor(corpse.x)) >> 4) == chunkX
+                && (((int) Math.floor(corpse.z)) >> 4) == chunkZ;
+    }
+
+    private void spawnCorpseForViewerIfNearby(CorpseRecord corpse, Player viewer) {
+        World world = Bukkit.getWorld(corpse.worldName);
+        if (world == null || viewer.getWorld() != world) {
+            return;
+        }
+        double maxDistance = Math.max(32.0, (Bukkit.getViewDistance() + 1) * 16.0);
+        if (viewer.getLocation().distanceSquared(corpse.location()) <= maxDistance * maxDistance) {
+            spawnCorpseForViewer(corpse, viewer);
+        }
+    }
+
+    private void spawnCorpseForViewer(CorpseRecord corpse, Player viewer) {
+        if (!viewer.isOnline() || !corpse.visibleTo.add(viewer.getUniqueId())) {
+            return;
+        }
+
+        UUID profileId = createSteveProfileId(corpse.id);
+        UserProfile profile = new UserProfile(profileId, safeProfileName(corpse.ownerName));
+        WrapperPlayServerPlayerInfoUpdate.PlayerInfo playerInfo =
+                new WrapperPlayServerPlayerInfoUpdate.PlayerInfo(
+                        profile, false, 0, GameMode.SURVIVAL, null, null, 0, true);
+
+        PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
+                new WrapperPlayServerPlayerInfoUpdate(
+                        EnumSet.of(WrapperPlayServerPlayerInfoUpdate.Action.ADD_PLAYER,
+                                WrapperPlayServerPlayerInfoUpdate.Action.UPDATE_LISTED),
+                        playerInfo));
+
+        Location modelLocation = corpse.location().add(0, 0.18, 0);
+        com.github.retrooper.packetevents.protocol.world.Location packetLocation =
+                new com.github.retrooper.packetevents.protocol.world.Location(
+                        modelLocation.getX(), modelLocation.getY(), modelLocation.getZ(),
+                        corpse.yaw, 0);
+
+        PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
+                new WrapperPlayServerSpawnEntity(corpse.fakeEntityId, profileId,
+                        EntityTypes.PLAYER, packetLocation, corpse.yaw, 0, null));
+
+        PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
+                new WrapperPlayServerEntityMetadata(corpse.fakeEntityId, List.of(
+                        new EntityData(6, EntityDataTypes.ENTITY_POSE, EntityPose.SWIMMING),
+                        new EntityData(17, EntityDataTypes.BYTE, ALL_SKIN_LAYERS)
+                )));
+        sendCorpseEquipment(corpse, viewer);
+    }
+
+    private void hideCorpseFromViewer(CorpseRecord corpse, Player viewer) {
+        if (!corpse.visibleTo.remove(viewer.getUniqueId())) {
+            return;
+        }
+        PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
+                new WrapperPlayServerDestroyEntities(corpse.fakeEntityId));
+        PacketEvents.getAPI().getPlayerManager().sendPacket(viewer,
+                new WrapperPlayServerPlayerInfoRemove(createSteveProfileId(corpse.id)));
+    }
+
+    private String safeProfileName(String ownerName) {
+        if (ownerName == null || ownerName.isBlank()) {
+            return "Corpse";
+        }
+        String cleaned = ownerName.replaceAll("[^A-Za-z0-9_]", "");
+        if (cleaned.isBlank()) {
+            cleaned = "Corpse";
+        }
+        return cleaned.substring(0, Math.min(16, cleaned.length()));
+    }
+
+    private UUID createSteveProfileId(UUID corpseId) {
+        UUID profileId = UUID.nameUUIDFromBytes(
+                ("CorpsePlugin:" + corpseId).getBytes(StandardCharsets.UTF_8));
+        // An even UUID hash selects the classic wide-arm Steve default skin, not Alex.
+        if ((profileId.hashCode() & 1) != 0) {
+            profileId = new UUID(profileId.getMostSignificantBits(),
+                    profileId.getLeastSignificantBits() ^ 1L);
+        }
+        return profileId;
+    }
+
+    private int newFakeEntityId() {
+        int id;
+        do {
+            id = ThreadLocalRandom.current().nextInt(1_000_000_000, 2_000_000_000);
+        } while (fakeEntityToCorpse.containsKey(id));
+        return id;
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -435,7 +586,9 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
                         saved.getDouble("z"),
                         (float) saved.getDouble("yaw"),
                         createdAt,
-                        saved.getInt("held-slot", 0)
+                        saved.getInt("held-slot", 0),
+                        saved.getInt("fake-entity-id", 0) > 0
+                                ? saved.getInt("fake-entity-id", 0) : newFakeEntityId()
                 );
 
                 createCorpseInventory(corpse);
@@ -465,7 +618,9 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
                 }
 
                 corpses.put(id, corpse);
+                fakeEntityToCorpse.put(corpse.fakeEntityId, corpse.id);
                 spawnVisuals(corpse);
+                updateModel(corpse);
                 scheduleDespawn(corpse);
             } catch (Exception exception) {
                 getLogger().warning("Could not load corpse '" + rawId + "': " + exception.getMessage());
@@ -491,6 +646,7 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
             data.set(base + ".yaw", corpse.yaw);
             data.set(base + ".created-at", corpse.createdAt);
             data.set(base + ".held-slot", corpse.heldSlot);
+            data.set(base + ".fake-entity-id", corpse.fakeEntityId);
 
             if (corpse.inventory != null) {
                 for (int slot = 0; slot < INVENTORY_SIZE; slot++) {
@@ -542,6 +698,10 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
         CorpseRecord corpse = corpses.remove(corpseId);
         if (corpse == null) {
             return;
+        }
+        fakeEntityToCorpse.remove(corpse.fakeEntityId);
+        for (Player viewer : Bukkit.getOnlinePlayers()) {
+            hideCorpseFromViewer(corpse, viewer);
         }
         if (corpse.expireTask != null) {
             corpse.expireTask.cancel();
@@ -660,6 +820,8 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
         private final float yaw;
         private final long createdAt;
         private final int heldSlot;
+        private final int fakeEntityId;
+        private final Set<UUID> visibleTo = ConcurrentHashMap.newKeySet();
 
         private ItemStack helmet;
         private ItemStack chestplate;
@@ -669,13 +831,12 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
         private ItemStack offhand;
 
         private Inventory inventory;
-        private ArmorStand body;
-        private TextDisplay label;
         private Interaction hitbox;
         private BukkitTask expireTask;
 
         private CorpseRecord(UUID id, UUID ownerId, String ownerName, String worldName,
-                             double x, double y, double z, float yaw, long createdAt, int heldSlot) {
+                             double x, double y, double z, float yaw, long createdAt,
+                             int heldSlot, int fakeEntityId) {
             this.id = id;
             this.ownerId = ownerId;
             this.ownerName = ownerName;
@@ -686,6 +847,7 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
             this.yaw = yaw;
             this.createdAt = createdAt;
             this.heldSlot = heldSlot;
+            this.fakeEntityId = fakeEntityId;
         }
 
         private Location location() {
