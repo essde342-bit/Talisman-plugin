@@ -1,0 +1,6 @@
+# Default timer for newly created crates, in seconds.
+timer-seconds: 300
+
+# This list is managed in-game using /crate editor.
+# Each item has its own independent chance from 1 to 100.
+items: {}
