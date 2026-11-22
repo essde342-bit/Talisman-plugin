@@ -4,6 +4,8 @@ main: ru.essde.corpse.CorpsePlugin
 api-version: '1.21.4'
 description: Horizontal player corpses with persistent shared loot inventories
 author: essde342-bit
+depend:
+  - packetevents
 
 commands:
   corpses:
