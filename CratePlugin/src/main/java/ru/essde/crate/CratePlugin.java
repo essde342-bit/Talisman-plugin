@@ -4,7 +4,7 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
-import org.bukkit.Display;
+import org.bukkit.entity.Display;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -30,7 +30,7 @@ import org.bukkit.event.world.ChunkLoadEvent;
 import org.bukkit.inventory.AnvilInventory;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
-import org.bukkit.inventory.InventoryType;
+import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.view.AnvilView;
@@ -495,7 +495,7 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
 
     @EventHandler(ignoreCancelled = true)
     public void onBarrelInteract(PlayerInteractEvent event) {
-        if (event.getClickedBlock() == null || event.getAction().name().equals("PHYSICAL")) {
+        if (event.getClickedBlock() == null || event.getAction() != org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK) {
             return;
         }
 
