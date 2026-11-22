@@ -1,0 +1,5 @@
+# Radius in blocks from the player shown on the map in each direction.
+map-radius: 1500
+
+# How often the map refreshes while it is open (in ticks; 20 ticks = 1 second).
+refresh-ticks: 10

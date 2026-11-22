@@ -19,6 +19,7 @@
         <module>RTAccess</module>
         <module>CorpsePlugin</module>
         <module>CratePlugin</module>
+        <module>RTMap</module>
     </modules>
     <repositories>
         <repository>

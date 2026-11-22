@@ -1,0 +1,36 @@
+name: RTMap
+version: 1.0.0
+main: ru.essde.rtmap.RTMapPlugin
+api-version: '1.21'
+description: Minimal black RT map with player position and saved points
+author: essde342-bit
+
+commands:
+  rtmap:
+    description: Открыть чёрную карту RT
+    usage: /rtmap
+    permission: rtmap.use
+  rtmap_add:
+    description: Добавить RT-точку в текущей позиции
+    usage: /rtmap_add <название>
+    permission: rtmap.admin
+  rtmap_remove:
+    description: Удалить RT-точку по названию
+    usage: /rtmap_remove <название>
+    permission: rtmap.admin
+  rtmap_list:
+    description: Показать сохранённые RT-точки
+    usage: /rtmap_list
+    permission: rtmap.admin
+  rtmap_reload:
+    description: Перезагрузить настройки и точки RTMap
+    usage: /rtmap_reload
+    permission: rtmap.admin
+
+permissions:
+  rtmap.use:
+    description: Позволяет открывать RT-карту
+    default: true
+  rtmap.admin:
+    description: Управление точками RTMap
+    default: op
