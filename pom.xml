@@ -18,6 +18,7 @@
         <module>CombatSystem</module>
         <module>RTAccess</module>
         <module>CorpsePlugin</module>
+        <module>CratePlugin</module>
     </modules>
     <repositories>
         <repository>
