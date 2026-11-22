@@ -1,0 +1,21 @@
+name: CratePlugin
+version: 1.0.0
+main: ru.essde.crate.CratePlugin
+api-version: '1.21'
+author: essde
+description: Configurable timed barrel crates
+
+commands:
+  crate:
+    description: Opens the crate editor or manages placed crates
+    usage: /crate <editor|list|remove>
+    permission: crate.admin
+  crate_create:
+    description: Turns the barrel you are looking at into a timed crate
+    usage: /crate_create <название>
+    permission: crate.admin
+
+permissions:
+  crate.admin:
+    description: Allows creating and managing crates
+    default: op
