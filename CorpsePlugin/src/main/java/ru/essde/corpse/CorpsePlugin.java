@@ -16,6 +16,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
@@ -65,8 +66,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
-
 public final class CorpsePlugin extends JavaPlugin implements Listener, CommandExecutor {
 
     private static final int INVENTORY_SIZE = 54;
@@ -419,7 +418,7 @@ public final class CorpsePlugin extends JavaPlugin implements Listener, CommandE
         if (world == null || viewer.getWorld() != world) {
             return;
         }
-        double maxDistance = Math.max(32.0, (Bukkit.getViewDistance() + 1) * 16.0);
+        double maxDistance = 192.0;
         if (viewer.getLocation().distanceSquared(corpse.location()) <= maxDistance * maxDistance) {
             spawnCorpseForViewer(corpse, viewer);
         }
