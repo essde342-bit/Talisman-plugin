@@ -25,6 +25,12 @@ jobs:
       - name: Build all plugins with Maven
         run: mvn --batch-mode --no-transfer-progress clean package
 
+      - name: Package RustWeapons resource pack
+        run: |
+          mkdir -p RustWeapons/target
+          cd RustWeapons/resource-pack
+          zip -qr ../target/RustWeapons-ResourcePack.zip .
+
       - name: Upload TalismanPlugin
         uses: actions/upload-artifact@v4
         with:
@@ -70,5 +76,21 @@ jobs:
         with:
           name: RTMap-1.0.0
           path: RTMap/target/RTMap-1.0.0.jar
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload RustWeapons
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustWeapons-1.0.0
+          path: RustWeapons/target/RustWeapons-1.0.0.jar
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload RustWeapons Resource Pack
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustWeapons-ResourcePack
+          path: RustWeapons/target/RustWeapons-ResourcePack.zip
           if-no-files-found: error
           retention-days: 30
