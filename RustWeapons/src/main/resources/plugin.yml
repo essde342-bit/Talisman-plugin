@@ -1,0 +1,15 @@
+name: RustWeapons
+version: 1.0.0
+main: ru.essde.rustweapons.RustWeaponsPlugin
+api-version: '1.21.4'
+author: essde
+description: Rust-style weapons for Paper 1.21.4
+commands:
+  rw:
+    description: RustWeapons commands
+    usage: /rw
+    aliases: [rustweapon, rustweapons]
+permissions:
+  rustweapons.admin:
+    description: Allows giving RustWeapons and ammunition
+    default: op
