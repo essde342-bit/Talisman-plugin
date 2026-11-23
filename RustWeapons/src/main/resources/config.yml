@@ -1,0 +1,3 @@
+resource-pack:
+  # Direct HTTPS URL to RustWeapons-ResourcePack.zip. Empty disables automatic sending.
+  url: ""
