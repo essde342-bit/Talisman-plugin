@@ -14,6 +14,10 @@ commands:
     description: Turns the barrel you are looking at into a timed crate
     usage: /crate_create <название>
     permission: crate.admin
+  crate_input:
+    description: Sets a crate chance or timer value after selecting it in the editor
+    usage: /crate_input <число>
+    permission: crate.admin
 
 permissions:
   crate.admin:
