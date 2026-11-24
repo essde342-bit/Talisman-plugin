@@ -8,7 +8,7 @@ import org.bukkit.FluidCollisionMode;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Particle;
-import org.bukkit.Sound;
+import org.bukkit.SoundCategory;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -261,7 +261,9 @@ public final class RustWeaponsPlugin extends JavaPlugin implements Listener, Com
         }
 
         player.sendMessage(Component.text("Перезарядка " + weapon.displayName + "...", NamedTextColor.YELLOW));
-        player.playSound(player.getLocation(), Sound.ITEM_CROSSBOW_LOADING_START, 0.7f, 0.8f);
+        player.getWorld().playSound(player.getLocation(),
+                "rustweapons:weapon." + weapon.id + ".reload",
+                SoundCategory.PLAYERS, 0.9f, 1.0f);
         BukkitTask task = Bukkit.getScheduler().runTaskLater(this, () -> {
             reloadTasks.remove(id);
             if (!player.isOnline()) return;
@@ -315,7 +317,9 @@ public final class RustWeaponsPlugin extends JavaPlugin implements Listener, Com
         World world = player.getWorld();
         Vector baseDirection = player.getEyeLocation().getDirection().normalize();
         Vector origin = player.getEyeLocation().toVector().add(baseDirection.clone().multiply(0.35));
-        world.playSound(player.getLocation(), Sound.ITEM_CROSSBOW_SHOOT, 1.0f, weapon.pitch);
+        world.playSound(player.getLocation(),
+                "rustweapons:weapon." + weapon.id + ".shot",
+                SoundCategory.PLAYERS, 1.0f, weapon.pitch);
         world.spawnParticle(Particle.SMOKE, origin.getX(), origin.getY(), origin.getZ(), 2, 0.025, 0.025, 0.025, 0.005);
 
         for (int pellet = 0; pellet < weapon.pellets; pellet++) {
