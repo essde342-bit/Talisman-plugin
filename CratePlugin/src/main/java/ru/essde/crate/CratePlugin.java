@@ -83,6 +83,7 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("crate").setExecutor(this);
         getCommand("crate_create").setExecutor(this);
+        getCommand("crate_input").setExecutor(this);
 
         Bukkit.getScheduler().runTaskTimer(this, this::tickCrates, 20L, 20L);
         Bukkit.getScheduler().runTask(this, this::restoreLoadedCrates);
@@ -117,6 +118,11 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
                 return true;
             }
             createCrate(player, String.join(" ", args));
+            return true;
+        }
+
+        if (command.getName().equalsIgnoreCase("crate_input")) {
+            handleNumberInput(player, args);
             return true;
         }
 
@@ -221,7 +227,7 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
                 List.of(
                         "§7Сейчас: §f" + timerSeconds + " сек. §8(" + formatDuration(timerSeconds) + ")",
                         "§7Нажми, чтобы изменить время",
-                        "§8Новое время применяется к новым крейтам"
+                        "§8Время применяется к новым крейтам"
                 )
         ));
 
@@ -232,6 +238,7 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
                         "§7Добавить предмет: положи его на курсор",
                         "§7и нажми по пустому слоту",
                         "§eSHIFT + ЛКМ §7по предмету — изменить шанс",
+                        "§7Затем введи §f/crate_input <1-100>",
                         "§cПКМ §7по предмету — удалить его",
                         "§7SHIFT + ЛКМ в своём инвентаре — добавить",
                         "§7Шанс каждого предмета проверяется отдельно"
@@ -312,12 +319,6 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
             return;
         }
 
-        if (top instanceof AnvilInventory && pendingInputs.containsKey(event.getWhoClicked().getUniqueId())) {
-            event.setCancelled(true);
-            if (event.getRawSlot() == 2 && event.getWhoClicked() instanceof Player player) {
-                handleNumberInput(player, event);
-            }
-        }
     }
 
     private void handleLootSlotClick(Player player, InventoryClickEvent event, int slot) {
@@ -354,7 +355,7 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
         }
 
         lootEntries.add(new LootEntry(cursor.clone(), 100));
-        event.setCursor(null);
+        player.setItemOnCursor(null);
         saveLoot();
         reopenEditor(player);
     }
@@ -371,7 +372,7 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
         }
 
         lootEntries.add(new LootEntry(source.clone(), 100));
-        event.setCurrentItem(null);
+        player.getInventory().setItem(event.getSlot(), null);
         saveLoot();
         reopenEditor(player);
     }
@@ -403,91 +404,71 @@ public final class CratePlugin extends org.bukkit.plugin.java.JavaPlugin impleme
             }
         }
 
-        if (top instanceof AnvilInventory && pendingInputs.containsKey(event.getWhoClicked().getUniqueId())) {
-            event.setCancelled(true);
-        }
     }
 
     private void openNumberInput(Player player, PendingInput pending, int initialValue) {
         pendingInputs.put(player.getUniqueId(), pending);
-
-        AnvilInventory anvil = (AnvilInventory) Bukkit.createInventory(player, InventoryType.ANVIL);
-        ItemStack paper = new ItemStack(Material.PAPER);
-        ItemMeta meta = paper.getItemMeta();
-        if (meta != null) {
-            meta.displayName(Component.text(String.valueOf(initialValue)));
-            paper.setItemMeta(meta);
-        }
-        anvil.setFirstItem(paper);
-        player.openInventory(anvil);
-
-        Bukkit.getScheduler().runTask(this, () -> {
-            if (player.isOnline() && player.getOpenInventory() instanceof AnvilView view) {
-                view.setRepairCost(0);
-                view.setRepairItemCountCost(0);
-                view.setMaximumRepairCost(0);
-            }
-        });
+        player.closeInventory();
 
         String prompt = pending.type == InputType.CHANCE
-                ? "Введи шанс от 1 до 100 и забери результат наковальни."
-                : "Введи время в секундах (1–604800) и забери результат наковальни.";
+                ? "Введи команду §f/crate_input <число> §e(от 1 до 100). Текущий шанс: " + initialValue + "%."
+                : "Введи команду §f/crate_input <число> §e(секунды, от 1 до 604800). Текущее время: "
+                        + formatDuration(initialValue) + ".";
         player.sendMessage(Component.text(prompt, NamedTextColor.YELLOW));
     }
 
-    private void handleNumberInput(Player player, InventoryClickEvent event) {
-        PendingInput pending = pendingInputs.remove(player.getUniqueId());
-        if (pending == null || !(event.getView() instanceof AnvilView anvilView)) {
+    private void handleNumberInput(Player player, String[] args) {
+        PendingInput pending = pendingInputs.get(player.getUniqueId());
+        if (pending == null) {
+            player.sendMessage(Component.text("Сначала выбери шанс предмета или время в редакторе: /crate editor.",
+                    NamedTextColor.RED));
             return;
         }
 
-        String raw = anvilView.getRenameText();
+        if (args.length != 1) {
+            player.sendMessage(Component.text("Использование: /crate_input <число>.", NamedTextColor.YELLOW));
+            return;
+        }
+
         int value;
         try {
-            value = Integer.parseInt(raw == null ? "" : raw.trim());
+            value = Integer.parseInt(args[0]);
         } catch (NumberFormatException exception) {
-            player.sendMessage(Component.text("Нужно ввести целое число.", NamedTextColor.RED));
-            reopenEditor(player);
+            player.sendMessage(Component.text("Нужно ввести целое число. Попробуй ещё раз: /crate_input <число>.",
+                    NamedTextColor.RED));
             return;
         }
 
         if (pending.type == InputType.CHANCE) {
             if (value < 1 || value > 100 || pending.slot < 0 || pending.slot >= lootEntries.size()) {
-                player.sendMessage(Component.text("Шанс должен быть от 1 до 100.", NamedTextColor.RED));
-                reopenEditor(player);
+                player.sendMessage(Component.text("Шанс должен быть от 1 до 100. Введи /crate_input <1-100>.",
+                        NamedTextColor.RED));
                 return;
             }
 
             lootEntries.get(pending.slot).chance = value;
             saveLoot();
-            player.sendMessage(Component.text("Шанс установлен: " + value + "%.", NamedTextColor.GREEN));
+            pendingInputs.remove(player.getUniqueId());
+            player.sendMessage(Component.text("Шанс сохранён: " + value + "%.", NamedTextColor.GREEN));
         } else {
             if (value < 1 || value > MAX_TIMER_SECONDS) {
-                player.sendMessage(Component.text("Время должно быть от 1 до 604800 секунд.", NamedTextColor.RED));
-                reopenEditor(player);
+                player.sendMessage(Component.text("Время должно быть от 1 до 604800 секунд. Введи /crate_input <секунды>.",
+                        NamedTextColor.RED));
                 return;
             }
 
             timerSeconds = value;
             saveLoot();
-            player.sendMessage(Component.text("Время открытия новых крейтов: " + formatDuration(timerSeconds) + ".",
-                    NamedTextColor.GREEN));
+            pendingInputs.remove(player.getUniqueId());
+            player.sendMessage(Component.text("Время для новых крейтов сохранено: "
+                    + formatDuration(timerSeconds) + ".", NamedTextColor.GREEN));
         }
 
         reopenEditor(player);
     }
 
     @EventHandler
-    public void onAnvilClose(InventoryCloseEvent event) {
-        UUID playerId = event.getPlayer().getUniqueId();
-        if (event.getInventory() instanceof AnvilInventory && pendingInputs.remove(playerId) != null) {
-            Bukkit.getScheduler().runTask(this, () -> {
-                if (event.getPlayer() instanceof Player player && player.isOnline()) {
-                    openEditor(player);
-                }
-            });
-        }
-
+    public void onEditorClose(InventoryCloseEvent event) {
         if (event.getInventory().getHolder() instanceof EditorHolder) {
             saveLoot();
         }
