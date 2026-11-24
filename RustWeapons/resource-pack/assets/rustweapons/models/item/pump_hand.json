@@ -1,7 +1,7 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "minecraft:item/bow_standby"
+    "layer0": "rustweapons:item/pump"
   },
   "display": {
     "firstperson_righthand": {
