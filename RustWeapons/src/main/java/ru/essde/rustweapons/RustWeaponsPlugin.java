@@ -300,7 +300,7 @@ public final class RustWeaponsPlugin extends JavaPlugin implements Listener, Com
         UUID playerId = player.getUniqueId();
         long now = System.currentTimeMillis();
         if (now < nextShotAt.getOrDefault(playerId, 0L)) return;
-        nextShotAt.put(playerId, now + weapon.cooldownTicks * 50L);
+        nextShotAt.put(playerId, now + weapon.cooldownMillis);
 
         int loaded = getLoaded(item);
         if (loaded <= 0) {
@@ -388,29 +388,30 @@ public final class RustWeaponsPlugin extends JavaPlugin implements Listener, Com
     }
 
     private enum Weapon {
-        SEMI("semi", "Semi-Automatic Rifle", AmmoType.RIFLE, 16, 8.0, 7, 32, 90, 1, 0.004, 1.10f),
-        AK("ak", "Assault Rifle", AmmoType.RIFLE, 30, 5.2, 3, 42, 78, 1, 0.018, 0.92f),
-        THOMPSON("thompson", "Thompson", AmmoType.PISTOL, 20, 4.5, 4, 38, 58, 1, 0.025, 1.00f),
-        SMG("smg", "Custom SMG", AmmoType.PISTOL, 24, 3.7, 2, 35, 48, 1, 0.032, 1.18f),
-        PUMP("pump", "Pump Shotgun", AmmoType.SHELL, 6, 1.35, 17, 40, 22, 8, 0.105, 0.78f),
-        DOUBLE("double", "Double Barrel", AmmoType.SHELL, 2, 1.45, 20, 32, 17, 12, 0.17, 0.70f),
-        BOLT("bolt", "Bolt Action Rifle", AmmoType.RIFLE, 4, 17.0, 27, 50, 120, 1, 0.001, 0.62f),
-        M92("m92", "M92 Pistol", AmmoType.PISTOL, 15, 5.0, 5, 35, 45, 1, 0.012, 1.08f);
+        // Automatic weapons use millisecond intervals so their shot rhythm can match Rust more closely.
+        SEMI("semi", "Semi-Automatic Rifle", AmmoType.RIFLE, 16, 8.0, 350, 32, 90, 1, 0.004, 1.10f),
+        AK("ak", "Assault Rifle", AmmoType.RIFLE, 30, 5.2, 133, 42, 78, 1, 0.018, 1.00f),
+        THOMPSON("thompson", "Thompson", AmmoType.PISTOL, 20, 4.5, 130, 38, 58, 1, 0.025, 1.00f),
+        SMG("smg", "Custom SMG", AmmoType.PISTOL, 24, 3.7, 100, 35, 48, 1, 0.032, 1.18f),
+        PUMP("pump", "Pump Shotgun", AmmoType.SHELL, 6, 1.35, 850, 40, 22, 8, 0.105, 0.78f),
+        DOUBLE("double", "Double Barrel", AmmoType.SHELL, 2, 1.45, 1000, 32, 17, 12, 0.17, 0.70f),
+        BOLT("bolt", "Bolt Action Rifle", AmmoType.RIFLE, 4, 17.0, 1350, 50, 120, 1, 0.001, 0.62f),
+        M92("m92", "M92 Pistol", AmmoType.PISTOL, 15, 5.0, 250, 35, 45, 1, 0.012, 1.08f);
         private final String id;
         private final String displayName;
         private final AmmoType ammo;
         private final int magazine;
         private final double damage;
-        private final int cooldownTicks;
+        private final int cooldownMillis;
         private final int reloadTicks;
         private final double range;
         private final int pellets;
         private final double spread;
         private final float pitch;
-        Weapon(String id, String displayName, AmmoType ammo, int magazine, double damage, int cooldownTicks, int reloadTicks,
+        Weapon(String id, String displayName, AmmoType ammo, int magazine, double damage, int cooldownMillis, int reloadTicks,
                double range, int pellets, double spread, float pitch) {
             this.id = id; this.displayName = displayName; this.ammo = ammo; this.magazine = magazine;
-            this.damage = damage; this.cooldownTicks = cooldownTicks; this.reloadTicks = reloadTicks; this.range = range;
+            this.damage = damage; this.cooldownMillis = cooldownMillis; this.reloadTicks = reloadTicks; this.range = range;
             this.pellets = pellets; this.spread = spread; this.pitch = pitch;
         }
         private static Weapon byId(String id) {
