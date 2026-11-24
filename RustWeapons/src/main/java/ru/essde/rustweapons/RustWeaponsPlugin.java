@@ -30,6 +30,7 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.persistence.PersistentDataContainer;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.plugin.messaging.PluginMessageListener;
 import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.RayTraceResult;
 import org.bukkit.util.Vector;
@@ -41,7 +42,8 @@ import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 
-public final class RustWeaponsPlugin extends JavaPlugin implements Listener, CommandExecutor, TabCompleter {
+public final class RustWeaponsPlugin extends JavaPlugin implements Listener, CommandExecutor, TabCompleter, PluginMessageListener {
+    private static final String RELOAD_CHANNEL = "rustweapons:reload";
     private NamespacedKey weaponKey;
     private NamespacedKey loadedKey;
     private NamespacedKey ammoKey;
@@ -57,6 +59,7 @@ public final class RustWeaponsPlugin extends JavaPlugin implements Listener, Com
         loadedKey = new NamespacedKey(this, "loaded_ammo");
         ammoKey = new NamespacedKey(this, "ammo_id");
         Bukkit.getPluginManager().registerEvents(this, this);
+        getServer().getMessenger().registerIncomingPluginChannel(this, RELOAD_CHANNEL, this);
         if (getCommand("rw") != null) {
             getCommand("rw").setExecutor(this);
             getCommand("rw").setTabCompleter(this);
@@ -68,6 +71,7 @@ public final class RustWeaponsPlugin extends JavaPlugin implements Listener, Com
     public void onDisable() {
         for (BukkitTask task : reloadTasks.values()) task.cancel();
         reloadTasks.clear();
+        getServer().getMessenger().unregisterIncomingPluginChannel(this, RELOAD_CHANNEL, this);
     }
 
     @Override
@@ -182,7 +186,7 @@ public final class RustWeaponsPlugin extends JavaPlugin implements Listener, Com
         meta.lore(List.of(
                 Component.text("Патроны: " + loaded + "/" + weapon.magazine, NamedTextColor.GRAY).decoration(TextDecoration.ITALIC, false),
                 Component.text("Тип: " + weapon.ammo.displayName, NamedTextColor.DARK_GRAY).decoration(TextDecoration.ITALIC, false),
-                Component.text("ПКМ — выстрел | /rw reload — перезарядка", NamedTextColor.YELLOW).decoration(TextDecoration.ITALIC, false)
+                Component.text("ПКМ — выстрел | R — перезарядка (с модом)", NamedTextColor.YELLOW).decoration(TextDecoration.ITALIC, false)
         ));
     }
 
@@ -236,6 +240,13 @@ public final class RustWeaponsPlugin extends JavaPlugin implements Listener, Com
             remaining -= take;
         }
         return requested - remaining;
+    }
+
+    @Override
+    public void onPluginMessageReceived(String channel, Player player, byte[] message) {
+        if (!RELOAD_CHANNEL.equals(channel) || message.length != 0) return;
+        // The client mod can only request a reload; all weapon, ammo and cooldown checks stay server-side.
+        startReload(player);
     }
 
     private void startReload(Player player) {
