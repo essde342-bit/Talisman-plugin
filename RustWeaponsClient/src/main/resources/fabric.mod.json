@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "rustweapons_client",
+  "version": "${version}",
+  "name": "RustWeapons Client",
+  "description": "Adds the R-key reload control for the RustWeapons Paper plugin.",
+  "authors": ["VoidSMP"],
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "ru.essde.rustweapons.client.RustWeaponsClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.9",
+    "minecraft": "~1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
